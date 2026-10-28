@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ApplicationPackage 
+    SchemaVersion="1.0" 
+    AutodeskProduct="AutoCAD" 
+    ProductType="Application" 
+    Name="BNBC ACI Column Load Takedown" 
+    AppVersion="1.0.0" 
+    Description="Column Load Takedown in FPS Units for BNBC 2020 and ACI 318" 
+    Author="Structural Automation">
+  <CompanyDetails Name="Structural Automation Bangladesh" />
+  
+  <!-- AutoCAD 2021-2024 (.NET Framework 4.8) on your Laptop -->
+  <Components Description="AutoCAD 2021-2024 Environment">
+    <RuntimeRequirements OS="Win64" Platform="AutoCAD*" SeriesMin="R24.0" SeriesMax="R24.3" />
+    <ComponentEntry 
+        AppName="ColumnLoadPluginNet48" 
+        Version="1.0.0" 
+        ModuleName="./Contents/net48/ColumnLoadPlugin.dll" 
+        LoadOnAutoCADStartup="True">
+      <Commands GroupName="STR_FPS">
+        <Command Local="CALCCOLLOADS" Global="CALCCOLLOADS" />
+      </Commands>
+    </ComponentEntry>
+  </Components>
+
+  <!-- AutoCAD 2025-2026 (.NET 8.0) on your PC -->
+  <Components Description="AutoCAD 2025-2026 Environment">
+    <RuntimeRequirements OS="Win64" Platform="AutoCAD*" SeriesMin="R25.0" SeriesMax="R26.0" />
+    <ComponentEntry 
+        AppName="ColumnLoadPluginNet8" 
+        Version="1.0.0" 
+        ModuleName="./Contents/net8.0/ColumnLoadPlugin.dll" 
+        LoadOnAutoCADStartup="True">
+      <Commands GroupName="STR_FPS">
+        <Command Local="CALCCOLLOADS" Global="CALCCOLLOADS" />
+      </Commands>
+    </ComponentEntry>
+  </Components>
+</ApplicationPackage>

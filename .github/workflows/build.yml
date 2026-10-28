@@ -1,0 +1,45 @@
+name: Build AutoCAD Plugin Online
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+    - name: Check out repository
+      uses: actions/checkout@v4
+
+    - name: Setup .NET SDK
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: |
+          8.0.x
+
+    - name: Build Both Target DLLs (.NET 4.8 and .NET 8.0)
+      run: |
+        dotnet build ColumnLoadPlugin.csproj -c Release
+
+    - name: Assemble Autoloader Bundle Layout
+      run: |
+        New-Item -ItemType Directory -Force -Path "bundle/ColumnLoadTakedown.bundle/Contents/net48"
+        New-Item -ItemType Directory -Force -Path "bundle/ColumnLoadTakedown.bundle/Contents/net8.0"
+        
+        Copy-Item "PackageContents.xml" -Destination "bundle/ColumnLoadTakedown.bundle/PackageContents.xml"
+        Copy-Item "bin/Release/net48/ColumnLoadPlugin.dll" -Destination "bundle/ColumnLoadTakedown.bundle/Contents/net48/"
+        Copy-Item "bin/Release/net8.0-windows/ColumnLoadPlugin.dll" -Destination "bundle/ColumnLoadTakedown.bundle/Contents/net8.0/"
+        Copy-Item "Setup.iss" -Destination "bundle/Setup.iss"
+
+    - name: Install Inno Setup and Build Setup.exe
+      run: |
+        choco install innosetup -y
+        & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "bundle/Setup.iss"
+
+    - name: Publish Finished Executable Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: BNBC_AutoCAD_Plugin_Installer
+        path: bundle/Output/*.exe
