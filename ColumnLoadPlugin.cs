@@ -79,17 +79,26 @@ namespace StructuralTakedown
         }
     }
 
-    public class ColumnData
+    public class ColumnDesignResult
     {
-        public string Id { get; set; }
+        public string Name { get; set; }
         public Point2d Center { get; set; }
         public double WidthIn { get; set; }
         public double DepthIn { get; set; }
         public double TribAreaSqFt { get; set; }
         public double ConnectedBeamLengthFt { get; set; }
-        public double CumulativeDL_Kips { get; set; }
-        public double CumulativeLL_Kips { get; set; }
-        public double FactoredPu_Kips { get; set; }
+        public double DL_Kips { get; set; }
+        public double LL_Kips { get; set; }
+        public double Pu_Kips { get; set; }
+        
+        // Multi-tier schedule sizes & bars
+        public string Size_UpToPL { get; set; }
+        public string Rebar_UpToPL { get; set; }
+        public string Size_GFto2nd { get; set; }
+        public string Rebar_GFto2nd { get; set; }
+        public string Size_3rdToRoof { get; set; }
+        public string Rebar_3rdToRoof { get; set; }
+        public string TieSpec { get; set; }
     }
 
     public class BeamSegment
@@ -108,16 +117,34 @@ namespace StructuralTakedown
             Database db = doc.Database;
             Editor ed = doc.Editor;
 
-            // 1. User Prompts for Building Stories & Height
-            PromptIntegerOptions pioStories = new PromptIntegerOptions("\nEnter Total Number of Stories (e.g. 6): ") { DefaultValue = 6 };
+            // 1. Dynamic Project Parameters
+            PromptIntegerOptions pioStories = new PromptIntegerOptions("\nEnter Total Number of Stories (e.g., 6): ") { DefaultValue = 6 };
             PromptIntegerResult pirStories = ed.GetInteger(pioStories);
             if (pirStories.Status != PromptStatus.OK) return;
             int numStories = pirStories.Value;
 
-            PromptDoubleOptions pdoHeight = new PromptDoubleOptions("\nEnter Story Height in FEET (e.g. 10.0): ") { DefaultValue = 10.0 };
+            PromptDoubleOptions pdoHeight = new PromptDoubleOptions("\nEnter Story Height in FEET (e.g., 10.0): ") { DefaultValue = 10.0 };
             PromptDoubleResult pirHeight = ed.GetDouble(pdoHeight);
             if (pirHeight.Status != PromptStatus.OK) return;
             double storyHeightFt = pirHeight.Value;
+
+            // Dynamic Live Load Prompt (Residential: 40 psf, Commercial: 65 - 100 psf)
+            PromptDoubleOptions pdoLL = new PromptDoubleOptions("\nEnter Floor Live Load in PSF (Residential=40, Commercial=65-100): ") { DefaultValue = 40.0 };
+            PromptDoubleResult pirLL = ed.GetDouble(pdoLL);
+            if (pirLL.Status != PromptStatus.OK) return;
+            double floorLL_unred_psf = pirLL.Value;
+
+            // Dynamic Floor Finish Prompt (15 to 25 psf)
+            PromptDoubleOptions pdoFF = new PromptDoubleOptions("\nEnter Floor Finish (FF) in PSF (15 to 25): ") { DefaultValue = 20.0 };
+            PromptDoubleResult pirFF = ed.GetDouble(pdoFF);
+            if (pirFF.Status != PromptStatus.OK) return;
+            double ff_psf = pirFF.Value;
+
+            // Dynamic Partition Wall Prompt
+            PromptDoubleOptions pdoPW = new PromptDoubleOptions("\nEnter Random Partition Wall Load on Slab in PSF (e.g., 25.0): ") { DefaultValue = 25.0 };
+            PromptDoubleResult pirPW = ed.GetDouble(pdoPW);
+            if (pirPW.Status != PromptStatus.OK) return;
+            double pw_psf = pirPW.Value;
 
             using (Transaction tr = db.TransactionManager.StartTransaction())
             {
@@ -136,11 +163,11 @@ namespace StructuralTakedown
                 Polyline slabPoly = tr.GetObject(psrSlab.Value[0].ObjectId, OpenMode.ForRead) as Polyline;
                 if (!slabPoly.Closed)
                 {
-                    ed.WriteMessage("\nError: The boundary on 'SLAB_OUTLINE' must be closed.");
+                    ed.WriteMessage("\nError: Polyline on 'SLAB_OUTLINE' must be closed.");
                     return;
                 }
 
-                // Detect drawing base unit (Inches vs Feet)
+                Extents3d slabExtents = slabPoly.GeometricExtents;
                 bool isInchDrawing = slabPoly.Area > 20000.0;
                 double toFtScale = isInchDrawing ? (1.0 / 12.0) : 1.0;
                 double toSqFtScale = isInchDrawing ? (1.0 / 144.0) : 1.0;
@@ -157,18 +184,17 @@ namespace StructuralTakedown
                     return;
                 }
 
-                List<ColumnData> columns = new List<ColumnData>();
+                List<ColumnDesignResult> columns = new List<ColumnDesignResult>();
                 int cIndex = 1;
                 foreach (SelectedObject so in psrCols.Value)
                 {
                     Entity ent = tr.GetObject(so.ObjectId, OpenMode.ForRead) as Entity;
-                    double widthIn = 12.0, depthIn = 15.0; // Defaults
+                    double widthIn = 12.0, depthIn = 15.0;
                     Point2d center = Point2d.Origin;
 
                     if (ent is Polyline pl)
                     {
                         center = GetPolylineCentroid(pl, toFtScale);
-                        // Read actual column dimensions from CAD bounding box
                         Extents3d ext = pl.GeometricExtents;
                         double dx = (ext.MaxPoint.X - ext.MinPoint.X) * (isInchDrawing ? 1.0 : 12.0);
                         double dy = (ext.MaxPoint.Y - ext.MinPoint.Y) * (isInchDrawing ? 1.0 : 12.0);
@@ -180,9 +206,9 @@ namespace StructuralTakedown
                         center = new Point2d(blk.Position.X * toFtScale, blk.Position.Y * toFtScale);
                     }
 
-                    columns.Add(new ColumnData
+                    columns.Add(new ColumnDesignResult
                     {
-                        Id = $"C{cIndex++}",
+                        Name = $"C-{cIndex++}",
                         Center = center,
                         WidthIn = widthIn,
                         DepthIn = depthIn
@@ -222,75 +248,67 @@ namespace StructuralTakedown
                     }
                 }
 
-                // 5. Engineering Load Rates (BNBC 2020 / FPS Units)
-                double gammaC = 150.0;           // pcf
-                double gammaM = 120.0;           // pcf
-                double tSlabFt = 5.0 / 12.0;     // 5" slab
-                double bBeamFt = 10.0 / 12.0;    // 10" beam
-                double hBeamFt = 15.0 / 12.0;    // 15" beam
-                double tWallFt = 5.0 / 12.0;     // 5" wall
+                // 5. Engineering Load Formulations
+                double gammaC = 150.0;
+                double gammaM = 120.0;
+                double tSlabFt = 5.0 / 12.0;
+                double bBeamFt = 10.0 / 12.0;
+                double hBeamFt = 15.0 / 12.0;
+                double tWallFt = 5.0 / 12.0;
                 double clearWallHtFt = Math.Max(0.0, storyHeightFt - hBeamFt);
 
-                double beamNetSW_plf = bBeamFt * (hBeamFt - tSlabFt) * gammaC; // 104.2 plf
-                double wallDL_plf = tWallFt * clearWallHtFt * gammaM * 0.85;   // 15% opening deduction
+                double beamNetSW_plf = bBeamFt * (hBeamFt - tSlabFt) * gammaC;
+                double wallDL_plf = tWallFt * clearWallHtFt * gammaM * 0.85;
                 double totalBeamLine_plf = beamNetSW_plf + wallDL_plf;
 
-                double slabSW_psf = tSlabFt * gammaC;       // 62.5 psf
-                double floorDL_psf = slabSW_psf + 55.0;     // 117.5 psf (Slab + 30 psf FF + 25 psf PW)
-                double roofDL_psf = slabSW_psf + 35.0;      // 97.5 psf (Slab + 35 psf Lime Terracing)
+                double slabSW_psf = tSlabFt * gammaC;
+                double floorDL_psf = slabSW_psf + ff_psf + pw_psf;
+                double roofDL_psf = slabSW_psf + 35.0; // 35 psf roof lime terracing/screed
+                double roofLL_psf = 20.0;
 
-                double floorLL_unred_psf = 40.0;  // Residential occupancy
-                double roofLL_psf = 20.0;        // Flat roof
-
-                // 6. Geometric Tributary Areas & Beam Distribution
-                // Assign beam loads accounting for eccentricities, cantilevers, and secondary connections
-                double snapToleranceFt = 2.0; // 2 ft snap radius to column boundary
+                // Map beam framing lengths
+                double snapToleranceFt = 2.0;
                 foreach (var beam in beams)
                 {
-                    ColumnData startCol = FindNearestColumn(beam.Start, columns, snapToleranceFt);
-                    ColumnData endCol = FindNearestColumn(beam.End, columns, snapToleranceFt);
+                    ColumnDesignResult startCol = FindNearestColumn(beam.Start, columns, snapToleranceFt);
+                    ColumnDesignResult endCol = FindNearestColumn(beam.End, columns, snapToleranceFt);
 
                     if (startCol != null && endCol != null)
                     {
-                        // Standard or eccentric beam framed between two columns
                         startCol.ConnectedBeamLengthFt += beam.LengthFt * 0.5;
                         endCol.ConnectedBeamLengthFt += beam.LengthFt * 0.5;
                     }
-                    else if (startCol != null && endCol == null)
+                    else if (startCol != null)
                     {
-                        // Cantilever beam projecting outward from startCol
                         startCol.ConnectedBeamLengthFt += beam.LengthFt;
                     }
-                    else if (startCol == null && endCol != null)
+                    else if (endCol != null)
                     {
-                        // Cantilever projecting from endCol
                         endCol.ConnectedBeamLengthFt += beam.LengthFt;
                     }
                     else
                     {
-                        // Secondary beam framing into other beams: split equally to nearest columns
-                        ColumnData c1 = FindNearestColumn(beam.Start, columns, 25.0);
-                        ColumnData c2 = FindNearestColumn(beam.End, columns, 25.0);
+                        ColumnDesignResult c1 = FindNearestColumn(beam.Start, columns, 25.0);
+                        ColumnDesignResult c2 = FindNearestColumn(beam.End, columns, 25.0);
                         if (c1 != null) c1.ConnectedBeamLengthFt += beam.LengthFt * 0.5;
                         if (c2 != null) c2.ConnectedBeamLengthFt += beam.LengthFt * 0.5;
                     }
                 }
 
-                // Calculate Tributary Area (Voronoi approximation bounded by slab)
+                // Tributary areas
                 foreach (var col in columns)
                 {
                     col.TribAreaSqFt = CalculateTributaryArea(col.Center, columns, slabAreaSqFt);
                 }
 
-                // 7. Multi-Story Downward Load Takedown & BNBC Live Load Reduction
+                // 6. Multi-Story Downward Axial Takedown & ACI 318 Sizing
                 BlockTableRecord btr = tr.GetObject(db.CurrentSpaceId, OpenMode.ForWrite) as BlockTableRecord;
 
                 foreach (var col in columns)
                 {
                     double cumDL_lbs = 0.0;
                     double cumFloorLL_unred_lbs = 0.0;
-                    double kLL = 4.0; // Interior column influence factor
-
+                    double kLL = 4.0;
                     double colSW_per_story = (col.WidthIn / 12.0) * (col.DepthIn / 12.0) * storyHeightFt * gammaC;
 
                     for (int s = numStories; s >= 1; s--)
@@ -298,7 +316,7 @@ namespace StructuralTakedown
                         bool isRoof = (s == numStories);
                         double dl_psf = isRoof ? roofDL_psf : floorDL_psf;
                         double floorSlabDL = col.TribAreaSqFt * dl_psf;
-                        double beamLineLoad = isRoof ? (beamNetSW_plf + 50.0) : totalBeamLine_plf; // 50 plf roof parapet
+                        double beamLineLoad = isRoof ? (beamNetSW_plf + 50.0) : totalBeamLine_plf;
                         double beamWallDL = col.ConnectedBeamLengthFt * beamLineLoad;
 
                         cumDL_lbs += (floorSlabDL + beamWallDL + colSW_per_story);
@@ -307,68 +325,167 @@ namespace StructuralTakedown
                             cumFloorLL_unred_lbs += (col.TribAreaSqFt * floorLL_unred_psf);
                     }
 
-                    // BNBC 2020 Live Load Reduction Formula (FPS)
+                    // BNBC 2020 LLR
                     double influenceArea = kLL * (col.TribAreaSqFt * (numStories - 1));
                     double llrFactor = 1.0;
                     if (influenceArea >= 400.0)
                     {
                         llrFactor = 0.25 + (15.0 / Math.Sqrt(influenceArea));
-                        llrFactor = Math.Max(0.40, Math.Min(1.0, llrFactor)); // Maximum 60% reduction
+                        llrFactor = Math.Max(0.40, Math.Min(1.0, llrFactor));
                     }
 
                     double totalReducedLL_lbs = (cumFloorLL_unred_lbs * llrFactor) + (col.TribAreaSqFt * roofLL_psf);
 
-                    // Convert to Kips (1 Kip = 1000 lbs)
-                    col.CumulativeDL_Kips = cumDL_lbs / 1000.0;
-                    col.CumulativeLL_Kips = totalReducedLL_lbs / 1000.0;
+                    col.DL_Kips = cumDL_lbs / 1000.0;
+                    col.LL_Kips = totalReducedLL_lbs / 1000.0;
+                    col.Pu_Kips = Math.Max(1.4 * col.DL_Kips, (1.2 * col.DL_Kips) + (1.6 * col.LL_Kips));
 
-                    // BNBC 2020 / ACI 318 Factored Combinations
-                    double pu1 = 1.4 * col.CumulativeDL_Kips;
-                    double pu2 = (1.2 * col.CumulativeDL_Kips) + (1.6 * col.CumulativeLL_Kips);
-                    col.FactoredPu_Kips = Math.Max(pu1, pu2);
+                    // Multi-tier Column Design Calculations
+                    // Tier 1: Base up to Plinth Level (100% Pu)
+                    CalculateTierDesign(col.Pu_Kips, col.WidthIn, col.DepthIn, out string sz1, out string rb1);
+                    col.Size_UpToPL = sz1;
+                    col.Rebar_UpToPL = rb1;
 
-                    // ACI 318 Section Design Check (fc=3000 psi, fy=60000 psi, target rho=1.5%)
-                    double fc = 3000.0, fy = 60000.0, rho = 0.015;
-                    double phiPnMax_denom = 0.52 * (0.85 * fc * (1.0 - rho) + fy * rho);
-                    double reqAg_sqin = (col.FactoredPu_Kips * 1000.0) / phiPnMax_denom;
+                    // Tier 2: GF to 2nd Floor (~70% Pu)
+                    CalculateTierDesign(col.Pu_Kips * 0.70, col.WidthIn, col.DepthIn, out string sz2, out string rb2);
+                    col.Size_GFto2nd = sz2;
+                    col.Rebar_GFto2nd = rb2;
 
-                    // If existing CAD dimension is smaller than required, recommend enlarged size
-                    double b_in = col.WidthIn;
-                    double h_in = Math.Ceiling((reqAg_sqin / b_in) / 2.0) * 2.0;
-                    h_in = Math.Max(col.DepthIn, h_in);
+                    // Tier 3: 3rd Floor to Roof (~40% Pu)
+                    CalculateTierDesign(col.Pu_Kips * 0.40, col.WidthIn, col.DepthIn, out string sz3, out string rb3);
+                    col.Size_3rdToRoof = sz3;
+                    col.Rebar_3rdToRoof = rb3;
 
-                    double reqAst = Math.Max(b_in * h_in * 0.01, (col.FactoredPu_Kips * 1000.0 / 0.52 - 0.85 * fc * (b_in * h_in)) / (fy - 0.85 * fc));
-                    int rebarCount = (int)Math.Max(4, Math.Ceiling(reqAst / 0.60)); // #7 or #8 bars
-                    if (rebarCount % 2 != 0) rebarCount++;
+                    col.TieSpec = "10mm Ø @ 4\" c/c (L/4), @ 7\" c/c (mid)";
 
-                    // 8. Place Formatted Structural Note on Drawing
+                    // In-drawing Column Text Annotation
                     double insertX = isInchDrawing ? (col.Center.X * 12.0 + 8.0) : (col.Center.X + 0.8);
                     double insertY = isInchDrawing ? (col.Center.Y * 12.0 + 8.0) : (col.Center.Y + 0.8);
-                    double textHeight = isInchDrawing ? 8.0 : 0.65;
+                    double txtHt = isInchDrawing ? 7.0 : 0.60;
 
                     MText note = new MText
                     {
                         Location = new Point3d(insertX, insertY, 0),
-                        Contents = $"\\C1;{col.Id} (Base Level)\\P" +
-                                   $"\\C7;Trib Area: {col.TribAreaSqFt:0} sft (LLR: {llrFactor:0.00})\\P" +
-                                   $"\\C7;DL: {col.CumulativeDL_Kips:0.0} kips | LL: {col.CumulativeLL_Kips:0.0} kips\\P" +
-                                   $"\\C3;Pu: {col.FactoredPu_Kips:0.0} kips (1.2D+1.6L)\\P" +
-                                   $"\\C2;Rec. Size: {b_in:0}\"x{h_in:0}\" [{rebarCount}-#8]",
-                        TextHeight = textHeight
+                        Contents = $"\\C1;{col.Name}\\P" +
+                                   $"\\C7;At: {col.TribAreaSqFt:0} sft\\P" +
+                                   $"\\C7;DL: {col.DL_Kips:0.0}k | LL: {col.LL_Kips:0.0}k\\P" +
+                                   $"\\C3;Pu: {col.Pu_Kips:0.0} kips\\P" +
+                                   $"\\C2;PL: {col.Size_UpToPL} [{col.Rebar_UpToPL}]",
+                        TextHeight = txtHt
                     };
-
                     btr.AppendEntity(note);
                     tr.AddNewlyCreatedDBObject(note, true);
                 }
 
+                // 7. Insert Column Design Schedule Table
+                InsertColumnScheduleTable(db, tr, btr, columns, slabExtents, isInchDrawing);
+
                 tr.Commit();
-                ed.WriteMessage($"\nSuccessfully calculated loads for {columns.Count} columns using BNBC 2020 FPS criteria.");
+                ed.WriteMessage($"\nCompleted! Processed {columns.Count} columns and inserted the Column Design Table.");
             }
         }
 
-        private ColumnData FindNearestColumn(Point2d pt, List<ColumnData> columns, double toleranceFt)
+        private void CalculateTierDesign(double puKips, double baseW, double baseD, out string sizeStr, out string rebarStr)
         {
-            ColumnData nearest = null;
+            double fc = 3000.0, fy = 60000.0, rho = 0.015;
+            double phiPnDenom = 0.52 * (0.85 * fc * (1.0 - rho) + fy * rho);
+            double reqAg = (puKips * 1000.0) / phiPnDenom;
+
+            double b = Math.Max(10.0, baseW);
+            double h = Math.Ceiling((reqAg / b) / 2.0) * 2.0;
+            h = Math.Max(b, Math.Max(baseD, h));
+
+            sizeStr = $"{b:0}\"x{h:0}\"";
+
+            double reqAst = Math.Max(b * h * 0.01, (puKips * 1000.0 / 0.52 - 0.85 * fc * (b * h)) / (fy - 0.85 * fc));
+            
+            // Rebar combinations (16mm = 0.31 sq in, 20mm = 0.49 sq in)
+            int count20 = (int)Math.Max(4, Math.Ceiling(reqAst / 0.49));
+            if (count20 % 2 != 0) count20++;
+
+            rebarStr = $"{count20}-20mm Ø";
+            if (count20 <= 4)
+            {
+                int count16 = (int)Math.Max(4, Math.Ceiling(reqAst / 0.31));
+                if (count16 % 2 != 0) count16++;
+                rebarStr = $"{count16}-16mm Ø";
+            }
+        }
+
+        private void InsertColumnScheduleTable(Database db, Transaction tr, BlockTableRecord btr, List<ColumnDesignResult> columns, Extents3d slabExtents, bool isInch)
+        {
+            Table table = new Table();
+            table.TableStyle = db.Tablestyle;
+
+            int numRows = columns.Count + 2;
+            int numCols = 8;
+            table.SetSize(numRows, numCols);
+
+            double rowHeight = isInch ? 28.0 : 2.5;
+            double colWidth = isInch ? 95.0 : 8.0;
+
+            table.SetRowHeight(rowHeight);
+            table.SetColumnWidth(colWidth);
+
+            // Title Row
+            table.Cells[0, 0].TextString = "COLUMN DESIGN SCHEDULE (BNBC 2020 & ACI 318)";
+            table.Cells[0, 0].TextHeight = isInch ? 14.0 : 1.2;
+
+            // Headers
+            string[] headers = {
+                "COLUMN\nNAME",
+                "TRIB AREA\n(sq ft)",
+                "DEAD LOAD\n(kips)",
+                "LIVE LOAD\n(kips)",
+                "FACTORED Pu\n(kips)",
+                "UP TO PL\n(Size & Rebar)",
+                "GF TO 2ND FLR\n(Size & Rebar)",
+                "3RD TO ROOF\n(Size & Rebar)"
+            };
+
+            for (int c = 0; c < numCols; c++)
+            {
+                table.Cells[1, c].TextString = headers[c];
+                table.Cells[1, c].TextHeight = isInch ? 9.0 : 0.8;
+                table.Cells[1, c].Alignment = CellAlignment.MiddleCenter;
+            }
+
+            // Populate rows
+            for (int i = 0; i < columns.Count; i++)
+            {
+                var col = columns[i];
+                int r = i + 2;
+
+                table.Cells[r, 0].TextString = col.Name;
+                table.Cells[r, 1].TextString = $"{col.TribAreaSqFt:0}";
+                table.Cells[r, 2].TextString = $"{col.DL_Kips:0.1}";
+                table.Cells[r, 3].TextString = $"{col.LL_Kips:0.1}";
+                table.Cells[r, 4].TextString = $"{col.Pu_Kips:0.1}";
+                table.Cells[r, 5].TextString = $"{col.Size_UpToPL}\n{col.Rebar_UpToPL}";
+                table.Cells[r, 6].TextString = $"{col.Size_GFto2nd}\n{col.Rebar_GFto2nd}";
+                table.Cells[r, 7].TextString = $"{col.Size_3rdToRoof}\n{col.Rebar_3rdToRoof}";
+
+                for (int c = 0; c < numCols; c++)
+                {
+                    table.Cells[r, c].TextHeight = isInch ? 7.5 : 0.65;
+                    table.Cells[r, c].Alignment = CellAlignment.MiddleCenter;
+                }
+            }
+
+            // Position table to the right side of the floor plan
+            double gap = isInch ? 60.0 : 5.0;
+            double posX = slabExtents.MaxPoint.X + gap;
+            double posY = slabExtents.MaxPoint.Y;
+
+            table.Position = new Point3d(posX, posY, 0);
+
+            btr.AppendEntity(table);
+            tr.AddNewlyCreatedDBObject(table, true);
+        }
+
+        private ColumnDesignResult FindNearestColumn(Point2d pt, List<ColumnDesignResult> columns, double toleranceFt)
+        {
+            ColumnDesignResult nearest = null;
             double minDist = double.MaxValue;
             foreach (var col in columns)
             {
@@ -393,7 +510,7 @@ namespace StructuralTakedown
             return new Point2d((x / pl.NumberOfVertices) * scale, (y / pl.NumberOfVertices) * scale);
         }
 
-        private double CalculateTributaryArea(Point2d center, List<ColumnData> allCols, double totalSlabArea)
+        private double CalculateTributaryArea(Point2d center, List<ColumnDesignResult> allCols, double totalSlabArea)
         {
             double minDist = double.MaxValue;
             foreach (var other in allCols)
