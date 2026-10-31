@@ -91,6 +91,7 @@ namespace StructuralTakedown
         public string EngineerName { get; set; } = "Engr. Rezaul Islam, M.Sc in Civil Engg.";
         public string IEB_Reg { get; set; } = "Fellow of IEB No: F/12380";
         public string KDA_Reg { get; set; } = "KDA Reg. No: Ka-09";
+        public string CustomDimStyleName { get; set; } = "Standard";
         public int TotalStories { get; set; }
         public double StoryHeightFt { get; set; }
         public double FixedWidthIn { get; set; }
@@ -167,6 +168,11 @@ namespace StructuralTakedown
             PromptStringOptions psoAddr = new PromptStringOptions("\nEnter Site Address: ") { DefaultValue = "03, South Central Road, Khulna", AllowSpaces = true };
             PromptResult prAddr = ed.GetString(psoAddr);
             meta.Address = string.IsNullOrWhiteSpace(prAddr.StringResult) ? "03, South Central Road, Khulna" : prAddr.StringResult;
+
+            // Custom Dimension Style Prompt
+            PromptStringOptions psoDimStyle = new PromptStringOptions("\nEnter Dimension Style Name (e.g. Standard, Annotative, ARCH): ") { DefaultValue = "Standard", AllowSpaces = true };
+            PromptResult prDimStyle = ed.GetString(psoDimStyle);
+            meta.CustomDimStyleName = string.IsNullOrWhiteSpace(prDimStyle.StringResult) ? "Standard" : prDimStyle.StringResult;
 
             // 2. Geometry & Constraints
             PromptIntegerOptions pioStories = new PromptIntegerOptions("\nEnter Total Number of Stories (e.g. 5 or 6): ") { DefaultValue = 6 };
@@ -446,7 +452,7 @@ namespace StructuralTakedown
 
                     col.TotalColSteelKg = t1.SteelWeightKg + t2.SteelWeightKg + t3.SteelWeightKg;
 
-                    // --- ONLY NUMBERING PLACED IN PLAN (C-1, C-2, C-3...) ---
+                    // Only Column ID in Plan (Middle-Left Justification)
                     double labelX = isInch ? (col.Center.X * 12.0) : col.Center.X;
                     double labelY = isInch ? (col.Center.Y * 12.0) : col.Center.Y;
                     double labelHt = isInch ? 10.0 : 0.85;
@@ -456,38 +462,41 @@ namespace StructuralTakedown
                         Location = new Point3d(labelX, labelY, 0),
                         Contents = $"\\C2;{col.Name}",
                         TextHeight = labelHt,
-                        Attachment = AttachmentPoint.MiddleCenter
+                        Attachment = AttachmentPoint.MiddleLeft
                     };
                     btr.AppendEntity(planLabel);
                     tr.AddNewlyCreatedDBObject(planLabel, true);
                 }
 
-                // 8. Place Drawings & Tables at least 20 FEET CLEAR from Slab Outline
-                double clearOffsetCAD = isInch ? (25.0 * 12.0) : 25.0; // 25 feet clear distance
+                // Place Drawings & Tables >= 20 FEET CLEAR from Slab Outline
+                double clearOffsetCAD = isInch ? (25.0 * 12.0) : 25.0;
                 double startDrawingX = slabExtents.MaxPoint.X + clearOffsetCAD;
                 double startDrawingY = slabExtents.MaxPoint.Y;
 
-                // Visual Detailing (Long-Sections and Cross-Sections)
-                DrawProfessionalColumnDetails(db, btr, tr, columns, meta.TotalStories, meta.StoryHeightFt, startDrawingX, startDrawingY, isInch);
+                ObjectId targetDimStyleId = GetDimensionStyleId(db, tr, meta.CustomDimStyleName);
 
-                double totalElevationsWidth = columns.Count * (isInch ? 190.0 : 16.0);
-                double tableOffsetX = startDrawingX + totalElevationsWidth + (isInch ? 120.0 : 10.0);
+                // Draw Long-Sections & Cross-Sections with Left Justification
+                DrawProfessionalColumnDetails(db, btr, tr, columns, meta.TotalStories, meta.StoryHeightFt, startDrawingX, startDrawingY, isInch, targetDimStyleId);
 
-                // Table 1: External Column Load Summary Table
+                // Table Offset positioned clear of column elevations
+                double totalElevationsWidth = columns.Count * (isInch ? 210.0 : 17.5);
+                double tableOffsetX = startDrawingX + totalElevationsWidth + (isInch ? 140.0 : 12.0);
+
+                // Table 1: Load Summary Table (All text vertically middle-left justified)
                 InsertColumnLoadSummaryTable(db, tr, btr, columns, tableOffsetX, startDrawingY, isInch);
 
-                // Table 2: Multi-Tier Schedule Table (Placed beside or below Table 1)
-                double schedOffsetY = startDrawingY - (isInch ? 360.0 : 30.0);
+                // Table 2: Multi-Tier Schedule Table (Expanded spacing: 440" / 37' vertical gap)
+                double schedOffsetY = startDrawingY - (isInch ? 440.0 : 37.0);
                 InsertLateralColumnScheduleTable(db, tr, btr, columns, tableOffsetX, schedOffsetY, isInch);
 
-                // Table 3: Bar Bending Schedule (BBS) Table
-                double bbsOffsetY = schedOffsetY - (isInch ? 380.0 : 32.0);
+                // Table 3: BBS Table (Expanded spacing: 440" / 37' vertical gap)
+                double bbsOffsetY = schedOffsetY - (isInch ? 440.0 : 37.0);
                 InsertBBSTable(db, tr, btr, columns, tableOffsetX, bbsOffsetY, isInch);
 
-                // General Notes
-                InsertLateralMaterialNotes(btr, tr, tableOffsetX, bbsOffsetY - (isInch ? 260.0 : 22.0), isInch, meta.WindSpeedMph, meta.SeismicZoneZ, meta);
+                // General Notes (Expanded spacing: 300" / 25' vertical gap)
+                InsertLateralMaterialNotes(btr, tr, tableOffsetX, bbsOffsetY - (isInch ? 300.0 : 25.0), isInch, meta.WindSpeedMph, meta.SeismicZoneZ, meta);
 
-                // 9. Generate HTML & PDF Reports
+                // HTML & PDF Reports
                 string desktopPath = Environment.GetFolderPath(Environment.SpecialFolder.Desktop);
                 string baseFileName = $"{meta.ProjectName.Replace(" ", "_")}_Structural_Calculation_Report";
                 string htmlPath = Path.Combine(desktopPath, $"{baseFileName}.html");
@@ -497,12 +506,21 @@ namespace StructuralTakedown
                 bool pdfSuccess = ConvertHtmlToPdfViaBrowser(htmlPath, pdfPath);
 
                 tr.Commit();
-                ed.WriteMessage($"\nDone! Clean column numbers placed in plan. External load summary & schedule tables created > 20' away.");
+                ed.WriteMessage($"\nDone! Column labels, schedules, and BBS drawn with custom DimStyle '{meta.CustomDimStyleName}'.");
+                ed.WriteMessage($"\nAll table cells and notes formatted with vertical Left-Justification (MiddleLeft).");
                 if (pdfSuccess)
                     ed.WriteMessage($"\nPDF Calculation Report generated on Desktop: {pdfPath}");
                 else
                     ed.WriteMessage($"\nHTML Calculation Sheet generated on Desktop: {htmlPath}");
             }
+        }
+
+        private ObjectId GetDimensionStyleId(Database db, Transaction tr, string dimStyleName)
+        {
+            DimStyleTable dst = tr.GetObject(db.DimStyleTableId, OpenMode.ForRead) as DimStyleTable;
+            if (dst.Has(dimStyleName))
+                return dst[dimStyleName];
+            return db.Dimstyle;
         }
 
         // Table 1: Column Load & Analysis Summary Table
@@ -515,30 +533,31 @@ namespace StructuralTakedown
             int numCols = 7;
             table.SetSize(numRows, numCols);
 
-            double rowHeight = isInch ? 28.0 : 2.4;
-            double colWidth = isInch ? 115.0 : 9.5;
+            double rowHeight = isInch ? 32.0 : 2.7;
+            double colWidth = isInch ? 125.0 : 10.5;
 
             table.SetRowHeight(rowHeight);
             table.SetColumnWidth(colWidth);
 
             table.Cells[0, 0].TextString = "TABLE 1: COLUMN AXIAL & LATERAL LOAD SUMMARY (BNBC 2020)";
-            table.Cells[0, 0].TextHeight = isInch ? 13.0 : 1.1;
+            table.Cells[0, 0].TextHeight = isInch ? 14.0 : 1.2;
+            table.Cells[0, 0].Alignment = CellAlignment.MiddleLeft;
 
             string[] headers = {
-                "COLUMN\nID",
-                "TRIBUTARY\nAREA (sft)",
-                "SERVICE DL\n(kips)",
-                "REDUCED LL\n(kips)",
-                "GOVERNING\nCOMBINATION",
-                "DESIGN Pu\n(kips)",
-                "DESIGN Mu\n(k-ft)"
+                "COLUMN ID",
+                "TRIBUTARY AREA (sft)",
+                "SERVICE DL (kips)",
+                "REDUCED LL (kips)",
+                "GOVERNING COMBINATION",
+                "DESIGN Pu (kips)",
+                "DESIGN Mu (k-ft)"
             };
 
             for (int c = 0; c < numCols; c++)
             {
                 table.Cells[1, c].TextString = headers[c];
-                table.Cells[1, c].TextHeight = isInch ? 8.0 : 0.70;
-                table.Cells[1, c].Alignment = CellAlignment.MiddleCenter;
+                table.Cells[1, c].TextHeight = isInch ? 8.5 : 0.72;
+                table.Cells[1, c].Alignment = CellAlignment.MiddleLeft; // Vertically centered, Left justified
             }
 
             for (int i = 0; i < columns.Count; i++)
@@ -556,8 +575,8 @@ namespace StructuralTakedown
 
                 for (int c = 0; c < numCols; c++)
                 {
-                    table.Cells[r, c].TextHeight = isInch ? 7.5 : 0.65;
-                    table.Cells[r, c].Alignment = CellAlignment.MiddleCenter;
+                    table.Cells[r, c].TextHeight = isInch ? 8.0 : 0.68;
+                    table.Cells[r, c].Alignment = CellAlignment.MiddleLeft; // Left justified
                 }
             }
 
@@ -627,10 +646,10 @@ namespace StructuralTakedown
             };
         }
 
-        private void DrawProfessionalColumnDetails(Database db, BlockTableRecord btr, Transaction tr, List<ColumnDesignResult> columns, int numStories, double storyHtFt, double startX, double startY, bool isInch)
+        private void DrawProfessionalColumnDetails(Database db, BlockTableRecord btr, Transaction tr, List<ColumnDesignResult> columns, int numStories, double storyHtFt, double startX, double startY, bool isInch, ObjectId customDimStyleId)
         {
             double scale = isInch ? 12.0 : 1.0;
-            double colSpacing = isInch ? 190.0 : 16.0;
+            double colSpacing = isInch ? 210.0 : 17.5;
 
             Color pureBlackColor = Color.FromRgb(0, 0, 0);
             Color stirrupColor = Color.FromColorIndex(ColorMethod.ByAci, 8);
@@ -643,7 +662,7 @@ namespace StructuralTakedown
                 double colW = col.Tiers[0].WidthIn * (isInch ? 1.0 : (1.0 / 12.0));
                 double cover = isInch ? 1.5 : (1.5 / 12.0);
 
-                // Concrete Elevation Box
+                // Elevation Box
                 Polyline elev = new Polyline();
                 elev.AddVertexAt(0, new Point2d(colX, startY - totalHt), 0, 0, 0);
                 elev.AddVertexAt(1, new Point2d(colX + colW, startY - totalHt), 0, 0, 0);
@@ -655,7 +674,7 @@ namespace StructuralTakedown
                 btr.AppendEntity(elev);
                 tr.AddNewlyCreatedDBObject(elev, true);
 
-                // Long Section Rebars with 1:6 Cranked (Dockten) Splices
+                // Rebars with Dockten Lap Splices
                 for (int s = 0; s < numStories; s++)
                 {
                     double storyTop = startY - (s * storyHtFt * scale);
@@ -667,17 +686,17 @@ namespace StructuralTakedown
                     DrawDocktenBar(btr, tr, colX + cover, storyBot, midY, lapHalf, isInch, true, pureBlackColor);
                     DrawDocktenBar(btr, tr, colX + colW - cover, storyBot, midY, lapHalf, isInch, false, pureBlackColor);
 
-                    // Stirrups: Top L/4 @ 4" c/c
+                    // Confinement Ties: Top L/4 @ 4" c/c
                     double step4in = isInch ? 4.0 : (4.0 / 12.0);
                     for (double y = storyTop - (step4in * 0.5); y >= storyTop - l0; y -= step4in)
                         DrawStirrupRung(btr, tr, colX, colX + colW, y, LineWeight.LineWeight018, stirrupColor);
 
-                    // Stirrups: Mid L/2 @ 7" c/c
+                    // Mid Ties: Mid L/2 @ 7" c/c
                     double step7in = isInch ? 7.0 : (7.0 / 12.0);
                     for (double y = storyTop - l0 - step7in; y >= storyBot + l0 + (step7in * 0.5); y -= step7in)
                         DrawStirrupRung(btr, tr, colX, colX + colW, y, LineWeight.LineWeight018, stirrupColor);
 
-                    // Stirrups: Bottom L/4 @ 4" c/c
+                    // Confinement Ties: Bottom L/4 @ 4" c/c
                     for (double y = storyBot + l0 - (step4in * 0.5); y >= storyBot + (step4in * 0.5); y -= step4in)
                         DrawStirrupRung(btr, tr, colX, colX + colW, y, LineWeight.LineWeight018, stirrupColor);
 
@@ -690,33 +709,34 @@ namespace StructuralTakedown
                     if (s == 1)
                     {
                         DrawLeaderAnnotation(btr, tr, new Point3d(colX + colW, storyTop - (l0 * 0.5), 0),
-                                             new Point3d(colX + colW + (scale * 2.5), storyTop - (l0 * 0.5) + (scale * 0.5), 0),
+                                             new Point3d(colX + colW + (scale * 2.8), storyTop - (l0 * 0.5) + (scale * 0.5), 0),
                                              "10mm Ø @ 4\" c/c (L/4 Confinement)", scale * 0.22);
 
                         DrawLeaderAnnotation(btr, tr, new Point3d(colX + colW, midY, 0),
-                                             new Point3d(colX + colW + (scale * 2.5), midY + (scale * 0.5), 0),
+                                             new Point3d(colX + colW + (scale * 2.8), midY + (scale * 0.5), 0),
                                              "Dockten Lap Splice (1:6 slope)\nL_lap = 45 db (Staggered)", scale * 0.22);
                     }
                 }
 
-                // Header
+                // Header (Left Justified)
                 MText colTitle = new MText
                 {
-                    Location = new Point3d(colX - (scale * 1.0), startY + (scale * 2.5), 0),
+                    Location = new Point3d(colX, startY + (scale * 2.5), 0),
                     Contents = $"\\C3;{col.Name} ELEVATION\\P\\C7;Base: {col.Tiers[0].WidthIn:0}\"x{col.Tiers[0].DepthIn:0}\"",
-                    TextHeight = scale * 0.45
+                    TextHeight = scale * 0.45,
+                    Attachment = AttachmentPoint.MiddleLeft
                 };
                 btr.AppendEntity(colTitle);
                 tr.AddNewlyCreatedDBObject(colTitle, true);
 
                 // Cross-Sections with Dimensions, Clear Cover & Donut Rebars
-                double secStartY = startY - totalHt - (isInch ? 45.0 : 3.8);
+                double secStartY = startY - totalHt - (isInch ? 55.0 : 4.6);
                 for (int t = 0; t < col.Tiers.Count; t++)
                 {
                     TierDesign tier = col.Tiers[t];
                     double tW = tier.WidthIn * (isInch ? 1.0 : (1.0 / 12.0));
                     double tD = tier.DepthIn * (isInch ? 1.0 : (1.0 / 12.0));
-                    double secY = secStartY - (t * (isInch ? 75.0 : 6.2));
+                    double secY = secStartY - (t * (isInch ? 90.0 : 7.5)); // Generous cross-section spacing
 
                     Polyline secBox = new Polyline();
                     secBox.AddVertexAt(0, new Point2d(colX, secY - tD), 0, 0, 0);
@@ -744,26 +764,28 @@ namespace StructuralTakedown
                     double barRadiusCAD = isInch ? barRadiusIn : (barRadiusIn / 12.0);
                     DrawProfessionalDonutRebarGrid(btr, tr, colX, secY, tW, tD, cover, tier.BarCount, barRadiusCAD, pureBlackColor);
 
-                    // Dimension lines
-                    DrawDimensionLine(btr, tr, db, new Point3d(colX, secY, 0), new Point3d(colX + tW, secY, 0),
-                                      new Point3d(colX + (tW / 2.0), secY + (scale * 0.8), 0), $"{tier.WidthIn:0}\"", scale * 0.20);
+                    // Dimension Lines with Custom DimStyle
+                    DrawDimensionLine(btr, tr, customDimStyleId, new Point3d(colX, secY, 0), new Point3d(colX + tW, secY, 0),
+                                      new Point3d(colX + (tW / 2.0), secY + (scale * 0.9), 0), $"{tier.WidthIn:0}\"", 0.0);
 
-                    DrawDimensionLine(btr, tr, db, new Point3d(colX, secY - tD, 0), new Point3d(colX, secY, 0),
-                                      new Point3d(colX - (scale * 0.8), secY - (tD / 2.0), 0), $"{tier.DepthIn:0}\"", scale * 0.20);
+                    DrawDimensionLine(btr, tr, customDimStyleId, new Point3d(colX, secY - tD, 0), new Point3d(colX, secY, 0),
+                                      new Point3d(colX - (scale * 0.9), secY - (tD / 2.0), 0), $"{tier.DepthIn:0}\"", Math.PI / 2.0);
 
                     DrawLeaderAnnotation(btr, tr, new Point3d(colX + (cover / 2.0), secY - tD + (cover / 2.0), 0),
-                                         new Point3d(colX - (scale * 1.8), secY - tD - (scale * 0.5), 0),
+                                         new Point3d(colX - (scale * 2.2), secY - tD - (scale * 0.6), 0),
                                          "1.5\" Clear Cover", scale * 0.18);
 
                     DrawLeaderAnnotation(btr, tr, new Point3d(colX + tW - cover, secY - cover, 0),
-                                         new Point3d(colX + tW + (scale * 2.2), secY + (scale * 0.5), 0),
+                                         new Point3d(colX + tW + (scale * 2.5), secY + (scale * 0.6), 0),
                                          $"{tier.BarCount} - {tier.BarDiaMm}mm Ø (Grade 60)\n10mm Ø Ties @ 4\"/7\" c/c", scale * 0.20);
 
+                    // Left-justified Section Callout
                     MText secLabel = new MText
                     {
-                        Location = new Point3d(colX, secY - tD - (scale * 1.2), 0),
+                        Location = new Point3d(colX, secY - tD - (scale * 1.5), 0),
                         Contents = $"\\C2;SECTION: {tier.TierLabel.ToUpper()}\\P\\C7;({tier.WidthIn:0}\" x {tier.DepthIn:0}\")",
-                        TextHeight = scale * 0.24
+                        TextHeight = scale * 0.24,
+                        Attachment = AttachmentPoint.MiddleLeft
                     };
                     btr.AppendEntity(secLabel);
                     tr.AddNewlyCreatedDBObject(secLabel, true);
@@ -852,7 +874,7 @@ namespace StructuralTakedown
             tr.AddNewlyCreatedDBObject(donut, true);
         }
 
-        private void DrawDimensionLine(BlockTableRecord btr, Transaction tr, Database db, Point3d pt1, Point3d pt2, Point3d dimLinePt, string text, double txtHt)
+        private void DrawDimensionLine(BlockTableRecord btr, Transaction tr, ObjectId dimStyleId, Point3d pt1, Point3d pt2, Point3d dimLinePt, string text, double rotation)
         {
             RotatedDimension dim = new RotatedDimension
             {
@@ -860,8 +882,8 @@ namespace StructuralTakedown
                 XLine2Point = pt2,
                 DimLinePoint = dimLinePt,
                 DimensionText = text,
-                TextHeight = txtHt,
-                DimensionStyle = db.Dimstyle
+                DimensionStyle = dimStyleId,
+                Rotation = rotation
             };
             dim.ColorIndex = 7;
             btr.AppendEntity(dim);
@@ -876,7 +898,7 @@ namespace StructuralTakedown
             btr.AppendEntity(arrowLine);
             tr.AddNewlyCreatedDBObject(arrowLine, true);
 
-            double landLength = txtHt * 3.0;
+            double landLength = txtHt * 3.5;
             Line landing = new Line(textPt, new Point3d(textPt.X + landLength, textPt.Y, 0));
             landing.ColorIndex = 1;
             landing.LineWeight = LineWeight.LineWeight018;
@@ -887,7 +909,8 @@ namespace StructuralTakedown
             {
                 Location = new Point3d(textPt.X + (txtHt * 0.3), textPt.Y + (txtHt * 0.8), 0),
                 Contents = $"\\C7;{text}",
-                TextHeight = txtHt
+                TextHeight = txtHt,
+                Attachment = AttachmentPoint.MiddleLeft
             };
             btr.AppendEntity(mtext);
             tr.AddNewlyCreatedDBObject(mtext, true);
@@ -902,7 +925,7 @@ namespace StructuralTakedown
             tr.AddNewlyCreatedDBObject(rung, true);
         }
 
-        // Table 2: Multi-Tier Schedule Table
+        // Table 2: Multi-Tier Schedule
         private void InsertLateralColumnScheduleTable(Database db, Transaction tr, BlockTableRecord btr, List<ColumnDesignResult> columns, double posX, double posY, bool isInch)
         {
             Table table = new Table();
@@ -912,17 +935,18 @@ namespace StructuralTakedown
             int numCols = 6;
             table.SetSize(numRows, numCols);
 
-            double rowHeight = isInch ? 30.0 : 2.5;
-            double colWidth = isInch ? 120.0 : 10.0;
+            double rowHeight = isInch ? 34.0 : 2.8;
+            double colWidth = isInch ? 140.0 : 11.5;
 
             table.SetRowHeight(rowHeight);
             table.SetColumnWidth(colWidth);
 
             table.Cells[0, 0].TextString = "TABLE 2: COLUMN MULTI-TIER REINFORCEMENT SCHEDULE";
-            table.Cells[0, 0].TextHeight = isInch ? 13.0 : 1.1;
+            table.Cells[0, 0].TextHeight = isInch ? 14.0 : 1.2;
+            table.Cells[0, 0].Alignment = CellAlignment.MiddleLeft;
 
             string[] headers = {
-                "COL\nNAME",
+                "COL NAME",
                 $"{columns[0].Tiers[0].TierLabel}\n(b x h & Rebar)",
                 $"{columns[0].Tiers[1].TierLabel}\n(b x h & Rebar)",
                 $"{columns[0].Tiers[2].TierLabel}\n(b x h & Rebar)",
@@ -933,8 +957,8 @@ namespace StructuralTakedown
             for (int c = 0; c < numCols; c++)
             {
                 table.Cells[1, c].TextString = headers[c];
-                table.Cells[1, c].TextHeight = isInch ? 8.0 : 0.70;
-                table.Cells[1, c].Alignment = CellAlignment.MiddleCenter;
+                table.Cells[1, c].TextHeight = isInch ? 8.5 : 0.72;
+                table.Cells[1, c].Alignment = CellAlignment.MiddleLeft; // Left justified
             }
 
             for (int i = 0; i < columns.Count; i++)
@@ -951,8 +975,8 @@ namespace StructuralTakedown
 
                 for (int c = 0; c < numCols; c++)
                 {
-                    table.Cells[r, c].TextHeight = isInch ? 7.5 : 0.65;
-                    table.Cells[r, c].Alignment = CellAlignment.MiddleCenter;
+                    table.Cells[r, c].TextHeight = isInch ? 8.0 : 0.68;
+                    table.Cells[r, c].Alignment = CellAlignment.MiddleLeft; // Left justified
                 }
             }
 
@@ -971,14 +995,15 @@ namespace StructuralTakedown
             int numCols = 6;
             bbs.SetSize(numRows, numCols);
 
-            double rowHeight = isInch ? 26.0 : 2.2;
-            double colWidth = isInch ? 115.0 : 9.5;
+            double rowHeight = isInch ? 28.0 : 2.4;
+            double colWidth = isInch ? 130.0 : 11.0;
 
             bbs.SetRowHeight(rowHeight);
             bbs.SetColumnWidth(colWidth);
 
             bbs.Cells[0, 0].TextString = "TABLE 3: BAR BENDING SCHEDULE (BBS) SUMMARY (BNBC 2020)";
-            bbs.Cells[0, 0].TextHeight = isInch ? 13.0 : 1.1;
+            bbs.Cells[0, 0].TextHeight = isInch ? 14.0 : 1.2;
+            bbs.Cells[0, 0].Alignment = CellAlignment.MiddleLeft;
 
             string[] headers = {
                 "MEMBER",
@@ -992,8 +1017,8 @@ namespace StructuralTakedown
             for (int c = 0; c < numCols; c++)
             {
                 bbs.Cells[1, c].TextString = headers[c];
-                bbs.Cells[1, c].TextHeight = isInch ? 8.0 : 0.70;
-                bbs.Cells[1, c].Alignment = CellAlignment.MiddleCenter;
+                bbs.Cells[1, c].TextHeight = isInch ? 8.5 : 0.72;
+                bbs.Cells[1, c].Alignment = CellAlignment.MiddleLeft; // Left justified
             }
 
             int currRow = 2;
@@ -1012,6 +1037,12 @@ namespace StructuralTakedown
                 bbs.Cells[currRow + 1, 3].TextString = "135° Hooks (6 db ext)";
                 bbs.Cells[currRow + 1, 4].TextString = "4\" c/c in Lo, 7\" c/c Mid";
                 bbs.Cells[currRow + 1, 5].TextString = $"{col.TotalColSteelKg * 0.25:0} kg";
+
+                for (int c = 0; c < numCols; c++)
+                {
+                    bbs.Cells[currRow, c].Alignment = CellAlignment.MiddleLeft;
+                    bbs.Cells[currRow + 1, c].Alignment = CellAlignment.MiddleLeft;
+                }
 
                 currRow += 2;
             }
@@ -1035,7 +1066,8 @@ namespace StructuralTakedown
                            "5. Lap Splices: L_lap = 45 db with 1:6 dockten bend. Staggered within middle half (L/2) of column. Never lap within Lo.\\P" +
                            "6. Materials: f'c = 3000 to 4000 psi, Rebar = Grade 60 (fy = 60,000 psi / 500W). Maximum w/c = 0.45.\\P" +
                            $"\\C2;7. Professional Certification: Designed by {meta.EngineerName} | {meta.IEB_Reg} | {meta.KDA_Reg}.",
-                TextHeight = scale * 0.38
+                TextHeight = scale * 0.40,
+                Attachment = AttachmentPoint.TopLeft // Top-Left justified notes
             };
             btr.AppendEntity(notes);
             tr.AddNewlyCreatedDBObject(notes, true);
@@ -1045,8 +1077,8 @@ namespace StructuralTakedown
         {
             string[] possibleBrowsers = new string[]
             {
-                @"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
                 @"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+                @"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
                 @"C:\Program Files\Google\Chrome\Application\chrome.exe",
                 @"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe"
             };
@@ -1095,14 +1127,14 @@ namespace StructuralTakedown
             sb.AppendLine(".title-page h1 { font-size: 24pt; margin-bottom: 5px; color: #1a365d; }");
             sb.AppendLine(".title-page h2 { font-size: 15pt; font-weight: normal; margin-bottom: 35px; color: #4a5568; }");
             sb.AppendLine(".meta-table { width: 90%; margin: 0 auto; text-align: left; font-size: 11pt; border-collapse: collapse; margin-top: 40px; }");
-            sb.AppendLine(".meta-table td { padding: 10px; border-bottom: 1px solid #ccc; }");
+            sb.AppendLine(".meta-table td { padding: 10px; border-bottom: 1px solid #ccc; text-align: left; }");
             sb.AppendLine(".meta-table td.label { font-weight: bold; width: 38%; color: #2d3748; }");
             sb.AppendLine(".engineer-box { margin-top: 50px; padding: 15px; border: 1px dashed #4a5568; display: inline-block; text-align: left; background-color: #f7fafc; }");
-            sb.AppendLine(".section-header { font-size: 13pt; font-weight: bold; margin-top: 25px; margin-bottom: 10px; color: #1a365d; border-bottom: 2px solid #1a365d; padding-bottom: 4px; }");
+            sb.AppendLine(".section-header { font-size: 13pt; font-weight: bold; margin-top: 25px; margin-bottom: 10px; color: #1a365d; border-bottom: 2px solid #1a365d; padding-bottom: 4px; text-align: left; }");
             sb.AppendLine("table.data-table { width: 100%; border-collapse: collapse; margin-top: 15px; font-size: 9.5pt; }");
-            sb.AppendLine("table.data-table th, table.data-table td { border: 1px solid #718096; padding: 6px; text-align: center; }");
+            sb.AppendLine("table.data-table th, table.data-table td { border: 1px solid #718096; padding: 7px; text-align: left; }"); // All cells left-justified
             sb.AppendLine("table.data-table th { background-color: #edf2f7; color: #2d3748; }");
-            sb.AppendLine(".formula-box { background-color: #f7fafc; border-left: 4px solid #3182ce; padding: 12px; margin: 15px 0; font-family: 'Courier New', monospace; font-size: 9.5pt; }");
+            sb.AppendLine(".formula-box { background-color: #f7fafc; border-left: 4px solid #3182ce; padding: 12px; margin: 15px 0; font-family: 'Courier New', monospace; font-size: 9.5pt; text-align: left; }");
             sb.AppendLine("@media print { .no-print { display: none; } }");
             sb.AppendLine("</style></head><body>");
 
@@ -1153,7 +1185,7 @@ namespace StructuralTakedown
             sb.AppendLine("&bull; P-M Sizing Equivalent Axial: Pu_equiv = Pu + (2 * Mu / h)");
             sb.AppendLine("</div>");
 
-            // Schedule Table
+            // Schedule Table (Left-justified)
             sb.AppendLine("<div class='section-header'>2. FINALIZED COLUMN REINFORCEMENT & SECTION SCHEDULE</div>");
             sb.AppendLine("<table class='data-table'>");
             sb.AppendLine("<thead><tr>");
@@ -1183,7 +1215,7 @@ namespace StructuralTakedown
 
             // Material Specifications
             sb.AppendLine("<div class='section-header'>3. MATERIAL SPECIFICATIONS & CONSTRUCTION NOTES</div>");
-            sb.AppendLine("<ol style='font-size: 10pt; line-height: 1.6;'>");
+            sb.AppendLine("<ol style='font-size: 10pt; line-height: 1.6; text-align: left;'>");
             sb.AppendLine("<li><b>Concrete Cylinder Strength:</b> f'c = 3000 psi to 4000 psi at 28 days. Casting volumetric ratio 1:1.5:3.</li>");
             sb.AppendLine("<li><b>Reinforcing Steel:</b> Deformed high-yield bars Grade 60 (fy = 60,000 psi / 500W conforming to BDS ISO 6935-2).</li>");
             sb.AppendLine("<li><b>Clear Concrete Cover:</b> 1.5 inches above Plinth Level (PL); 2.5 to 3.0 inches below PL in contact with ground.</li>");
