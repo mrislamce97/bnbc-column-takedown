@@ -50,7 +50,7 @@ namespace StructuralTakedown
                 ribbon.Tabs.Add(tab);
             }
 
-            RibbonPanelSource panelSource = new RibbonPanelSource { Title = "Design & Calculation" };
+            RibbonPanelSource panelSource = new RibbonPanelSource { Title = "Design & Detailing" };
             RibbonPanel panel = new RibbonPanel { Source = panelSource };
             tab.Panels.Add(panel);
 
@@ -205,7 +205,7 @@ namespace StructuralTakedown
 
             using (Transaction tr = db.TransactionManager.StartTransaction())
             {
-                // Slab Boundary Selection
+                // Select Slab Boundary
                 TypedValue[] slabFilter = new TypedValue[] {
                     new TypedValue((int)DxfCode.LayerName, "SLAB_OUTLINE"),
                     new TypedValue((int)DxfCode.Start, "LWPOLYLINE")
@@ -446,43 +446,48 @@ namespace StructuralTakedown
 
                     col.TotalColSteelKg = t1.SteelWeightKg + t2.SteelWeightKg + t3.SteelWeightKg;
 
-                    // Annotate Drawing text
-                    double insertX = isInch ? (col.Center.X * 12.0 + 8.0) : (col.Center.X + 0.8);
-                    double insertY = isInch ? (col.Center.Y * 12.0 + 8.0) : (col.Center.Y + 0.8);
-                    double txtHt = isInch ? 7.0 : 0.60;
+                    // --- ONLY NUMBERING PLACED IN PLAN (C-1, C-2, C-3...) ---
+                    double labelX = isInch ? (col.Center.X * 12.0) : col.Center.X;
+                    double labelY = isInch ? (col.Center.Y * 12.0) : col.Center.Y;
+                    double labelHt = isInch ? 10.0 : 0.85;
 
-                    MText note = new MText
+                    MText planLabel = new MText
                     {
-                        Location = new Point3d(insertX, insertY, 0),
-                        Contents = $"\\C1;{col.Name} ({col.GoverningCase})\\P" +
-                                   $"\\C7;At: {col.TribAreaSqFt:0} sft\\P" +
-                                   $"\\C7;Pu: {col.GoverningPu_Kips:0.0}k | Mu: {col.GoverningMu_FtKips:0.0}k-ft\\P" +
-                                   $"\\C2;T1({t1_lbl}): {t1.WidthIn:0}\"x{t1.DepthIn:0}\" [{t1.BarCount}-{t1.BarDiaMm}mm]\\P" +
-                                   $"\\C5;T2({t2_lbl}): {t2.WidthIn:0}\"x{t2.DepthIn:0}\" [{t2.BarCount}-{t2.BarDiaMm}mm]\\P" +
-                                   $"\\C4;T3({t3_lbl}): {t3.WidthIn:0}\"x{t3.DepthIn:0}\" [{t3.BarCount}-{t3.BarDiaMm}mm]",
-                        TextHeight = txtHt
+                        Location = new Point3d(labelX, labelY, 0),
+                        Contents = $"\\C2;{col.Name}",
+                        TextHeight = labelHt,
+                        Attachment = AttachmentPoint.MiddleCenter
                     };
-                    btr.AppendEntity(note);
-                    tr.AddNewlyCreatedDBObject(note, true);
+                    btr.AppendEntity(planLabel);
+                    tr.AddNewlyCreatedDBObject(planLabel, true);
                 }
 
-                // 8. Visual Detailing Offset (25 ft clear distance)
-                double clearOffsetCAD = isInch ? (25.0 * 12.0) : 25.0;
+                // 8. Place Drawings & Tables at least 20 FEET CLEAR from Slab Outline
+                double clearOffsetCAD = isInch ? (25.0 * 12.0) : 25.0; // 25 feet clear distance
                 double startDrawingX = slabExtents.MaxPoint.X + clearOffsetCAD;
                 double startDrawingY = slabExtents.MaxPoint.Y;
 
-                DrawAllColumnElevationsAndSections(btr, tr, columns, meta.TotalStories, meta.StoryHeightFt, startDrawingX, startDrawingY, isInch);
+                // Visual Detailing (Long-Sections and Cross-Sections)
+                DrawProfessionalColumnDetails(db, btr, tr, columns, meta.TotalStories, meta.StoryHeightFt, startDrawingX, startDrawingY, isInch);
 
-                double totalElevationsWidth = columns.Count * (isInch ? 160.0 : 14.0);
+                double totalElevationsWidth = columns.Count * (isInch ? 190.0 : 16.0);
                 double tableOffsetX = startDrawingX + totalElevationsWidth + (isInch ? 120.0 : 10.0);
 
-                InsertLateralColumnScheduleTable(db, tr, btr, columns, tableOffsetX, startDrawingY, isInch);
+                // Table 1: External Column Load Summary Table
+                InsertColumnLoadSummaryTable(db, tr, btr, columns, tableOffsetX, startDrawingY, isInch);
 
-                double bbsOffsetY = startDrawingY - (isInch ? 650.0 : 55.0);
+                // Table 2: Multi-Tier Schedule Table (Placed beside or below Table 1)
+                double schedOffsetY = startDrawingY - (isInch ? 360.0 : 30.0);
+                InsertLateralColumnScheduleTable(db, tr, btr, columns, tableOffsetX, schedOffsetY, isInch);
+
+                // Table 3: Bar Bending Schedule (BBS) Table
+                double bbsOffsetY = schedOffsetY - (isInch ? 380.0 : 32.0);
                 InsertBBSTable(db, tr, btr, columns, tableOffsetX, bbsOffsetY, isInch);
+
+                // General Notes
                 InsertLateralMaterialNotes(btr, tr, tableOffsetX, bbsOffsetY - (isInch ? 260.0 : 22.0), isInch, meta.WindSpeedMph, meta.SeismicZoneZ, meta);
 
-                // 9. Generate HTML and Direct PDF Calculation Report
+                // 9. Generate HTML & PDF Reports
                 string desktopPath = Environment.GetFolderPath(Environment.SpecialFolder.Desktop);
                 string baseFileName = $"{meta.ProjectName.Replace(" ", "_")}_Structural_Calculation_Report";
                 string htmlPath = Path.Combine(desktopPath, $"{baseFileName}.html");
@@ -492,12 +497,73 @@ namespace StructuralTakedown
                 bool pdfSuccess = ConvertHtmlToPdfViaBrowser(htmlPath, pdfPath);
 
                 tr.Commit();
-                ed.WriteMessage($"\nDone! Details and schedule table drawn at least 20' clear from slab outline.");
+                ed.WriteMessage($"\nDone! Clean column numbers placed in plan. External load summary & schedule tables created > 20' away.");
                 if (pdfSuccess)
-                    ed.WriteMessage($"\nPDF Calculation Report successfully generated: {pdfPath}");
+                    ed.WriteMessage($"\nPDF Calculation Report generated on Desktop: {pdfPath}");
                 else
-                    ed.WriteMessage($"\nHTML Calculation Sheet generated (Open and Save as PDF): {htmlPath}");
+                    ed.WriteMessage($"\nHTML Calculation Sheet generated on Desktop: {htmlPath}");
             }
+        }
+
+        // Table 1: Column Load & Analysis Summary Table
+        private void InsertColumnLoadSummaryTable(Database db, Transaction tr, BlockTableRecord btr, List<ColumnDesignResult> columns, double posX, double posY, bool isInch)
+        {
+            Table table = new Table();
+            table.TableStyle = db.Tablestyle;
+
+            int numRows = columns.Count + 2;
+            int numCols = 7;
+            table.SetSize(numRows, numCols);
+
+            double rowHeight = isInch ? 28.0 : 2.4;
+            double colWidth = isInch ? 115.0 : 9.5;
+
+            table.SetRowHeight(rowHeight);
+            table.SetColumnWidth(colWidth);
+
+            table.Cells[0, 0].TextString = "TABLE 1: COLUMN AXIAL & LATERAL LOAD SUMMARY (BNBC 2020)";
+            table.Cells[0, 0].TextHeight = isInch ? 13.0 : 1.1;
+
+            string[] headers = {
+                "COLUMN\nID",
+                "TRIBUTARY\nAREA (sft)",
+                "SERVICE DL\n(kips)",
+                "REDUCED LL\n(kips)",
+                "GOVERNING\nCOMBINATION",
+                "DESIGN Pu\n(kips)",
+                "DESIGN Mu\n(k-ft)"
+            };
+
+            for (int c = 0; c < numCols; c++)
+            {
+                table.Cells[1, c].TextString = headers[c];
+                table.Cells[1, c].TextHeight = isInch ? 8.0 : 0.70;
+                table.Cells[1, c].Alignment = CellAlignment.MiddleCenter;
+            }
+
+            for (int i = 0; i < columns.Count; i++)
+            {
+                var col = columns[i];
+                int r = i + 2;
+
+                table.Cells[r, 0].TextString = col.Name;
+                table.Cells[r, 1].TextString = $"{col.TribAreaSqFt:0}";
+                table.Cells[r, 2].TextString = $"{col.TotalBaseDL_Kips:0.1}";
+                table.Cells[r, 3].TextString = $"{col.TotalBaseLL_Kips:0.1}";
+                table.Cells[r, 4].TextString = col.GoverningCase;
+                table.Cells[r, 5].TextString = $"{col.GoverningPu_Kips:0.1}";
+                table.Cells[r, 6].TextString = $"{col.GoverningMu_FtKips:0.1}";
+
+                for (int c = 0; c < numCols; c++)
+                {
+                    table.Cells[r, c].TextHeight = isInch ? 7.5 : 0.65;
+                    table.Cells[r, c].Alignment = CellAlignment.MiddleCenter;
+                }
+            }
+
+            table.Position = new Point3d(posX, posY, 0);
+            btr.AppendEntity(table);
+            tr.AddNewlyCreatedDBObject(table, true);
         }
 
         private TierDesign DesignColumnSectionFromWidth(double puKips, double muFtKips, double fixedWidthIn, string label, double tierHeightFt)
@@ -538,7 +604,6 @@ namespace StructuralTakedown
                 barCount = 4;
             }
 
-            // Ensure even bar counts (4, 6, 8, 10, 12)
             if (barCount % 2 != 0) barCount++;
 
             double unitWtMain = (barDia == 20) ? 0.753 : 0.482;
@@ -562,13 +627,13 @@ namespace StructuralTakedown
             };
         }
 
-        private void DrawAllColumnElevationsAndSections(BlockTableRecord btr, Transaction tr, List<ColumnDesignResult> columns, int numStories, double storyHtFt, double startX, double startY, bool isInch)
+        private void DrawProfessionalColumnDetails(Database db, BlockTableRecord btr, Transaction tr, List<ColumnDesignResult> columns, int numStories, double storyHtFt, double startX, double startY, bool isInch)
         {
             double scale = isInch ? 12.0 : 1.0;
-            double colSpacing = isInch ? 170.0 : 14.5;
+            double colSpacing = isInch ? 190.0 : 16.0;
 
             Color pureBlackColor = Color.FromRgb(0, 0, 0);
-            Color stirrupColor = Color.FromColorIndex(ColorMethod.ByAci, 8); // Thin Gray
+            Color stirrupColor = Color.FromColorIndex(ColorMethod.ByAci, 8);
 
             for (int i = 0; i < columns.Count; i++)
             {
@@ -576,8 +641,9 @@ namespace StructuralTakedown
                 double colX = startX + (i * colSpacing);
                 double totalHt = numStories * storyHtFt * scale;
                 double colW = col.Tiers[0].WidthIn * (isInch ? 1.0 : (1.0 / 12.0));
+                double cover = isInch ? 1.5 : (1.5 / 12.0);
 
-                // 1. Concrete Elevation Boundary
+                // Concrete Elevation Box
                 Polyline elev = new Polyline();
                 elev.AddVertexAt(0, new Point2d(colX, startY - totalHt), 0, 0, 0);
                 elev.AddVertexAt(1, new Point2d(colX + colW, startY - totalHt), 0, 0, 0);
@@ -589,109 +655,69 @@ namespace StructuralTakedown
                 btr.AppendEntity(elev);
                 tr.AddNewlyCreatedDBObject(elev, true);
 
-                // 2. Thick Black Main Longitudinal Rebars
-                double cover = isInch ? 1.5 : (1.5 / 12.0);
-                Line mainBarLeft = new Line(new Point3d(colX + cover, startY - totalHt, 0), new Point3d(colX + cover, startY, 0));
-                mainBarLeft.Color = pureBlackColor;
-                mainBarLeft.LineWeight = LineWeight.LineWeight050; // Heavy
-                btr.AppendEntity(mainBarLeft);
-                tr.AddNewlyCreatedDBObject(mainBarLeft, true);
-
-                Line mainBarRight = new Line(new Point3d(colX + colW - cover, startY - totalHt, 0), new Point3d(colX + colW - cover, startY, 0));
-                mainBarRight.Color = pureBlackColor;
-                mainBarRight.LineWeight = LineWeight.LineWeight050; // Heavy
-                btr.AppendEntity(mainBarRight);
-                tr.AddNewlyCreatedDBObject(mainBarRight, true);
-
-                // 3. Floor Levels & Varied Stirrup Distribution
-                for (int s = 0; s <= numStories; s++)
+                // Long Section Rebars with 1:6 Cranked (Dockten) Splices
+                for (int s = 0; s < numStories; s++)
                 {
-                    double levelY = startY - (s * storyHtFt * scale);
-                    Line lvlLine = new Line(new Point3d(colX - (scale * 1.5), levelY, 0), new Point3d(colX + colW + (scale * 1.5), levelY, 0));
+                    double storyTop = startY - (s * storyHtFt * scale);
+                    double storyBot = storyTop - (storyHtFt * scale);
+                    double l0 = (storyHtFt * scale) / 4.0;
+                    double midY = (storyTop + storyBot) / 2.0;
+                    double lapHalf = isInch ? 18.0 : 1.5;
+
+                    DrawDocktenBar(btr, tr, colX + cover, storyBot, midY, lapHalf, isInch, true, pureBlackColor);
+                    DrawDocktenBar(btr, tr, colX + colW - cover, storyBot, midY, lapHalf, isInch, false, pureBlackColor);
+
+                    // Stirrups: Top L/4 @ 4" c/c
+                    double step4in = isInch ? 4.0 : (4.0 / 12.0);
+                    for (double y = storyTop - (step4in * 0.5); y >= storyTop - l0; y -= step4in)
+                        DrawStirrupRung(btr, tr, colX, colX + colW, y, LineWeight.LineWeight018, stirrupColor);
+
+                    // Stirrups: Mid L/2 @ 7" c/c
+                    double step7in = isInch ? 7.0 : (7.0 / 12.0);
+                    for (double y = storyTop - l0 - step7in; y >= storyBot + l0 + (step7in * 0.5); y -= step7in)
+                        DrawStirrupRung(btr, tr, colX, colX + colW, y, LineWeight.LineWeight018, stirrupColor);
+
+                    // Stirrups: Bottom L/4 @ 4" c/c
+                    for (double y = storyBot + l0 - (step4in * 0.5); y >= storyBot + (step4in * 0.5); y -= step4in)
+                        DrawStirrupRung(btr, tr, colX, colX + colW, y, LineWeight.LineWeight018, stirrupColor);
+
+                    Line lvlLine = new Line(new Point3d(colX - (scale * 1.5), storyTop, 0), new Point3d(colX + colW + (scale * 1.5), storyTop, 0));
                     lvlLine.ColorIndex = 8;
                     lvlLine.LineWeight = LineWeight.LineWeight015;
                     btr.AppendEntity(lvlLine);
                     tr.AddNewlyCreatedDBObject(lvlLine, true);
 
-                    if (s < numStories)
+                    if (s == 1)
                     {
-                        double storyTop = levelY;
-                        double storyBot = levelY - (storyHtFt * scale);
-                        double storyH = storyHtFt * scale;
-                        double l0 = storyH / 4.0; // Confinement length L/4
+                        DrawLeaderAnnotation(btr, tr, new Point3d(colX + colW, storyTop - (l0 * 0.5), 0),
+                                             new Point3d(colX + colW + (scale * 2.5), storyTop - (l0 * 0.5) + (scale * 0.5), 0),
+                                             "10mm Ø @ 4\" c/c (L/4 Confinement)", scale * 0.22);
 
-                        // Confinement zone (Top L/4): 4" spacing
-                        double step4in = isInch ? 4.0 : (4.0 / 12.0);
-                        for (double y = storyTop - (step4in * 0.5); y >= storyTop - l0; y -= step4in)
-                            DrawStirrupRung(btr, tr, colX, colX + colW, y, LineWeight.LineWeight018, stirrupColor);
-
-                        // Middle zone (L/2): 7" spacing
-                        double step7in = isInch ? 7.0 : (7.0 / 12.0);
-                        for (double y = storyTop - l0 - step7in; y >= storyBot + l0 + (step7in * 0.5); y -= step7in)
-                            DrawStirrupRung(btr, tr, colX, colX + colW, y, LineWeight.LineWeight018, stirrupColor);
-
-                        // Confinement zone (Bottom L/4): 4" spacing
-                        for (double y = storyBot + l0 - (step4in * 0.5); y >= storyBot + (step4in * 0.5); y -= step4in)
-                            DrawStirrupRung(btr, tr, colX, colX + colW, y, LineWeight.LineWeight018, stirrupColor);
-
-                        // Mid-height Lapping Splices
-                        double midY = (storyTop + storyBot) / 2.0;
-                        Line lapLeft = new Line(new Point3d(colX + cover + (scale * 0.08), midY - (scale * 0.8), 0), new Point3d(colX + cover + (scale * 0.08), midY + (scale * 0.8), 0));
-                        lapLeft.Color = Color.FromColorIndex(ColorMethod.ByAci, 1);
-                        lapLeft.LineWeight = LineWeight.LineWeight035;
-                        btr.AppendEntity(lapLeft);
-                        tr.AddNewlyCreatedDBObject(lapLeft, true);
-
-                        Line lapRight = new Line(new Point3d(colX + colW - cover - (scale * 0.08), midY - (scale * 0.8), 0), new Point3d(colX + colW - cover - (scale * 0.08), midY + (scale * 0.8), 0));
-                        lapRight.Color = Color.FromColorIndex(ColorMethod.ByAci, 1);
-                        lapRight.LineWeight = LineWeight.LineWeight035;
-                        btr.AppendEntity(lapRight);
-                        tr.AddNewlyCreatedDBObject(lapRight, true);
-
-                        // Text annotations for stirrups and lap
-                        if (s == 1)
-                        {
-                            MText tieTopNote = new MText
-                            {
-                                Location = new Point3d(colX + colW + (scale * 0.3), storyTop - (l0 * 0.5), 0),
-                                Contents = "\\C1;10mm @ 4\" c/c (L/4)",
-                                TextHeight = scale * 0.22
-                            };
-                            btr.AppendEntity(tieTopNote);
-                            tr.AddNewlyCreatedDBObject(tieTopNote, true);
-
-                            MText tieMidNote = new MText
-                            {
-                                Location = new Point3d(colX + colW + (scale * 0.3), midY, 0),
-                                Contents = "\\C3;10mm @ 7\" c/c (Mid L/2)\\P\\C1;Lap L=45 db (Staggered)",
-                                TextHeight = scale * 0.22
-                            };
-                            btr.AppendEntity(tieMidNote);
-                            tr.AddNewlyCreatedDBObject(tieMidNote, true);
-                        }
+                        DrawLeaderAnnotation(btr, tr, new Point3d(colX + colW, midY, 0),
+                                             new Point3d(colX + colW + (scale * 2.5), midY + (scale * 0.5), 0),
+                                             "Dockten Lap Splice (1:6 slope)\nL_lap = 45 db (Staggered)", scale * 0.22);
                     }
                 }
 
-                // Long Section Header
+                // Header
                 MText colTitle = new MText
                 {
-                    Location = new Point3d(colX - (scale * 1.0), startY + (scale * 2.0), 0),
-                    Contents = $"\\C3;{col.Name} LONG-SECTION\\P\\C7;Base: {col.Tiers[0].WidthIn:0}\"x{col.Tiers[0].DepthIn:0}\"",
+                    Location = new Point3d(colX - (scale * 1.0), startY + (scale * 2.5), 0),
+                    Contents = $"\\C3;{col.Name} ELEVATION\\P\\C7;Base: {col.Tiers[0].WidthIn:0}\"x{col.Tiers[0].DepthIn:0}\"",
                     TextHeight = scale * 0.45
                 };
                 btr.AppendEntity(colTitle);
                 tr.AddNewlyCreatedDBObject(colTitle, true);
 
-                // 4. Detailed Cross-Sections with Exact Rebar Counts
-                double secStartY = startY - totalHt - (isInch ? 36.0 : 3.0);
+                // Cross-Sections with Dimensions, Clear Cover & Donut Rebars
+                double secStartY = startY - totalHt - (isInch ? 45.0 : 3.8);
                 for (int t = 0; t < col.Tiers.Count; t++)
                 {
                     TierDesign tier = col.Tiers[t];
                     double tW = tier.WidthIn * (isInch ? 1.0 : (1.0 / 12.0));
                     double tD = tier.DepthIn * (isInch ? 1.0 : (1.0 / 12.0));
-                    double secY = secStartY - (t * (isInch ? 55.0 : 4.6));
+                    double secY = secStartY - (t * (isInch ? 75.0 : 6.2));
 
-                    // Concrete boundary
                     Polyline secBox = new Polyline();
                     secBox.AddVertexAt(0, new Point2d(colX, secY - tD), 0, 0, 0);
                     secBox.AddVertexAt(1, new Point2d(colX + tW, secY - tD), 0, 0, 0);
@@ -703,7 +729,6 @@ namespace StructuralTakedown
                     btr.AppendEntity(secBox);
                     tr.AddNewlyCreatedDBObject(secBox, true);
 
-                    // Thin Stirrup Loop
                     Polyline tieLoop = new Polyline();
                     tieLoop.AddVertexAt(0, new Point2d(colX + cover, secY - tD + cover), 0, 0, 0);
                     tieLoop.AddVertexAt(1, new Point2d(colX + tW - cover, secY - tD + cover), 0, 0, 0);
@@ -715,75 +740,157 @@ namespace StructuralTakedown
                     btr.AppendEntity(tieLoop);
                     tr.AddNewlyCreatedDBObject(tieLoop, true);
 
-                    // Draw Exact Rebar Layout (4, 6, 8, 10, or 12 bars)
-                    DrawDynamicRebarDots(btr, tr, colX, secY, tW, tD, cover, tier.BarCount, scale * 0.09, pureBlackColor);
+                    double barRadiusIn = (tier.BarDiaMm == 20) ? (0.79 / 2.0) : (0.63 / 2.0);
+                    double barRadiusCAD = isInch ? barRadiusIn : (barRadiusIn / 12.0);
+                    DrawProfessionalDonutRebarGrid(btr, tr, colX, secY, tW, tD, cover, tier.BarCount, barRadiusCAD, pureBlackColor);
 
-                    // Cross-Section Callout Text
-                    MText secText = new MText
+                    // Dimension lines
+                    DrawDimensionLine(btr, tr, db, new Point3d(colX, secY, 0), new Point3d(colX + tW, secY, 0),
+                                      new Point3d(colX + (tW / 2.0), secY + (scale * 0.8), 0), $"{tier.WidthIn:0}\"", scale * 0.20);
+
+                    DrawDimensionLine(btr, tr, db, new Point3d(colX, secY - tD, 0), new Point3d(colX, secY, 0),
+                                      new Point3d(colX - (scale * 0.8), secY - (tD / 2.0), 0), $"{tier.DepthIn:0}\"", scale * 0.20);
+
+                    DrawLeaderAnnotation(btr, tr, new Point3d(colX + (cover / 2.0), secY - tD + (cover / 2.0), 0),
+                                         new Point3d(colX - (scale * 1.8), secY - tD - (scale * 0.5), 0),
+                                         "1.5\" Clear Cover", scale * 0.18);
+
+                    DrawLeaderAnnotation(btr, tr, new Point3d(colX + tW - cover, secY - cover, 0),
+                                         new Point3d(colX + tW + (scale * 2.2), secY + (scale * 0.5), 0),
+                                         $"{tier.BarCount} - {tier.BarDiaMm}mm Ø (Grade 60)\n10mm Ø Ties @ 4\"/7\" c/c", scale * 0.20);
+
+                    MText secLabel = new MText
                     {
-                        Location = new Point3d(colX + tW + (scale * 0.3), secY - (tD / 2.0), 0),
-                        Contents = $"\\C2;{tier.TierLabel}\\P" +
-                                   $"\\C7;Size: {tier.WidthIn:0}\"x{tier.DepthIn:0}\"\\P" +
-                                   $"\\C1;Main: {tier.BarCount}-{tier.BarDiaMm}mm Ø\\P" +
-                                   $"\\C8;Ties: 10mm Ø (4\"/7\" c/c)",
-                        TextHeight = scale * 0.22
+                        Location = new Point3d(colX, secY - tD - (scale * 1.2), 0),
+                        Contents = $"\\C2;SECTION: {tier.TierLabel.ToUpper()}\\P\\C7;({tier.WidthIn:0}\" x {tier.DepthIn:0}\")",
+                        TextHeight = scale * 0.24
                     };
-                    btr.AppendEntity(secText);
-                    tr.AddNewlyCreatedDBObject(secText, true);
+                    btr.AppendEntity(secLabel);
+                    tr.AddNewlyCreatedDBObject(secLabel, true);
                 }
             }
         }
 
-        private void DrawDynamicRebarDots(BlockTableRecord btr, Transaction tr, double colX, double secY, double tW, double tD, double cover, int barCount, double rad, Color pureBlack)
+        private void DrawDocktenBar(BlockTableRecord btr, Transaction tr, double x, double yBot, double yMid, double lapHalf, bool isInch, bool isLeft, Color pureBlack)
         {
-            double leftX = colX + cover + (rad * 0.5);
-            double rightX = colX + tW - cover - (rad * 0.5);
-            double topY = secY - cover - (rad * 0.5);
-            double botY = secY - tD + cover + (rad * 0.5);
+            double offset = isInch ? 0.75 : (0.75 / 12.0);
+            double crankX = isLeft ? (x + offset) : (x - offset);
 
-            // 4 Corner Bars (Common to all configurations)
-            DrawRebarDot(btr, tr, leftX, topY, rad, pureBlack);
-            DrawRebarDot(btr, tr, rightX, topY, rad, pureBlack);
-            DrawRebarDot(btr, tr, leftX, botY, rad, pureBlack);
-            DrawRebarDot(btr, tr, rightX, botY, rad, pureBlack);
+            Polyline lowerBar = new Polyline();
+            lowerBar.AddVertexAt(0, new Point2d(x, yBot), 0, 0, 0);
+            lowerBar.AddVertexAt(1, new Point2d(x, yMid + lapHalf), 0, 0, 0);
+            lowerBar.Color = pureBlack;
+            lowerBar.LineWeight = LineWeight.LineWeight050;
+            btr.AppendEntity(lowerBar);
+            tr.AddNewlyCreatedDBObject(lowerBar, true);
+
+            Polyline upperBar = new Polyline();
+            upperBar.AddVertexAt(0, new Point2d(crankX, yMid - lapHalf), 0, 0, 0);
+            upperBar.AddVertexAt(1, new Point2d(crankX, yMid - (lapHalf * 0.3)), 0, 0, 0);
+            upperBar.AddVertexAt(2, new Point2d(x, yMid + (lapHalf * 0.3)), 0, 0, 0);
+            upperBar.AddVertexAt(3, new Point2d(x, yMid + (lapHalf * 2.0)), 0, 0, 0);
+            upperBar.Color = pureBlack;
+            upperBar.LineWeight = LineWeight.LineWeight050;
+            btr.AppendEntity(upperBar);
+            tr.AddNewlyCreatedDBObject(upperBar, true);
+        }
+
+        private void DrawProfessionalDonutRebarGrid(BlockTableRecord btr, Transaction tr, double colX, double secY, double tW, double tD, double cover, int barCount, double barRadius, Color pureBlack)
+        {
+            double leftX = colX + cover + barRadius;
+            double rightX = colX + tW - cover - barRadius;
+            double topY = secY - cover - barRadius;
+            double botY = secY - tD + cover + barRadius;
+
+            DrawSolidDonutRebar(btr, tr, leftX, topY, barRadius, pureBlack);
+            DrawSolidDonutRebar(btr, tr, rightX, topY, barRadius, pureBlack);
+            DrawSolidDonutRebar(btr, tr, leftX, botY, barRadius, pureBlack);
+            DrawSolidDonutRebar(btr, tr, rightX, botY, barRadius, pureBlack);
 
             if (barCount == 6)
             {
-                // 2 Middle bars along depth
                 double midY = (topY + botY) / 2.0;
-                DrawRebarDot(btr, tr, leftX, midY, rad, pureBlack);
-                DrawRebarDot(btr, tr, rightX, midY, rad, pureBlack);
+                DrawSolidDonutRebar(btr, tr, leftX, midY, barRadius, pureBlack);
+                DrawSolidDonutRebar(btr, tr, rightX, midY, barRadius, pureBlack);
             }
             else if (barCount == 8)
             {
-                // 2 bars on each long face
-                double y1 = topY - (topY - botY) / 3.0;
-                double y2 = topY - 2.0 * (topY - botY) / 3.0;
-                DrawRebarDot(btr, tr, leftX, y1, rad, pureBlack);
-                DrawRebarDot(btr, tr, leftX, y2, rad, pureBlack);
-                DrawRebarDot(btr, tr, rightX, y1, rad, pureBlack);
-                DrawRebarDot(btr, tr, rightX, y2, rad, pureBlack);
+                double dy = (topY - botY) / 3.0;
+                DrawSolidDonutRebar(btr, tr, leftX, topY - dy, barRadius, pureBlack);
+                DrawSolidDonutRebar(btr, tr, leftX, topY - (2.0 * dy), barRadius, pureBlack);
+                DrawSolidDonutRebar(btr, tr, rightX, topY - dy, barRadius, pureBlack);
+                DrawSolidDonutRebar(btr, tr, rightX, topY - (2.0 * dy), barRadius, pureBlack);
             }
             else if (barCount >= 10)
             {
-                // 3 intermediate bars on each long face
-                double y1 = topY - (topY - botY) / 4.0;
-                double y2 = topY - 2.0 * (topY - botY) / 4.0;
-                double y3 = topY - 3.0 * (topY - botY) / 4.0;
-                DrawRebarDot(btr, tr, leftX, y1, rad, pureBlack);
-                DrawRebarDot(btr, tr, leftX, y2, rad, pureBlack);
-                DrawRebarDot(btr, tr, leftX, y3, rad, pureBlack);
-                DrawRebarDot(btr, tr, rightX, y1, rad, pureBlack);
-                DrawRebarDot(btr, tr, rightX, y2, rad, pureBlack);
-                DrawRebarDot(btr, tr, rightX, y3, rad, pureBlack);
+                double dy = (topY - botY) / 4.0;
+                DrawSolidDonutRebar(btr, tr, leftX, topY - dy, barRadius, pureBlack);
+                DrawSolidDonutRebar(btr, tr, leftX, topY - (2.0 * dy), barRadius, pureBlack);
+                DrawSolidDonutRebar(btr, tr, leftX, topY - (3.0 * dy), barRadius, pureBlack);
+                DrawSolidDonutRebar(btr, tr, rightX, topY - dy, barRadius, pureBlack);
+                DrawSolidDonutRebar(btr, tr, rightX, topY - (2.0 * dy), barRadius, pureBlack);
+                DrawSolidDonutRebar(btr, tr, rightX, topY - (3.0 * dy), barRadius, pureBlack);
 
                 if (barCount == 12)
                 {
                     double midX = (leftX + rightX) / 2.0;
-                    DrawRebarDot(btr, tr, midX, topY, rad, pureBlack);
-                    DrawRebarDot(btr, tr, midX, botY, rad, pureBlack);
+                    DrawSolidDonutRebar(btr, tr, midX, topY, barRadius, pureBlack);
+                    DrawSolidDonutRebar(btr, tr, midX, botY, barRadius, pureBlack);
                 }
             }
+        }
+
+        private void DrawSolidDonutRebar(BlockTableRecord btr, Transaction tr, double cx, double cy, double radius, Color pureBlack)
+        {
+            Polyline donut = new Polyline();
+            donut.AddVertexAt(0, new Point2d(cx - (radius / 2.0), cy), 1.0, radius, radius);
+            donut.AddVertexAt(1, new Point2d(cx + (radius / 2.0), cy), 1.0, radius, radius);
+            donut.Closed = true;
+            donut.Color = pureBlack;
+            donut.LineWeight = LineWeight.LineWeight050;
+            btr.AppendEntity(donut);
+            tr.AddNewlyCreatedDBObject(donut, true);
+        }
+
+        private void DrawDimensionLine(BlockTableRecord btr, Transaction tr, Database db, Point3d pt1, Point3d pt2, Point3d dimLinePt, string text, double txtHt)
+        {
+            RotatedDimension dim = new RotatedDimension
+            {
+                XLine1Point = pt1,
+                XLine2Point = pt2,
+                DimLinePoint = dimLinePt,
+                DimensionText = text,
+                TextHeight = txtHt,
+                DimensionStyle = db.Dimstyle
+            };
+            dim.ColorIndex = 7;
+            btr.AppendEntity(dim);
+            tr.AddNewlyCreatedDBObject(dim, true);
+        }
+
+        private void DrawLeaderAnnotation(BlockTableRecord btr, Transaction tr, Point3d targetPt, Point3d textPt, string text, double txtHt)
+        {
+            Line arrowLine = new Line(targetPt, textPt);
+            arrowLine.ColorIndex = 1;
+            arrowLine.LineWeight = LineWeight.LineWeight018;
+            btr.AppendEntity(arrowLine);
+            tr.AddNewlyCreatedDBObject(arrowLine, true);
+
+            double landLength = txtHt * 3.0;
+            Line landing = new Line(textPt, new Point3d(textPt.X + landLength, textPt.Y, 0));
+            landing.ColorIndex = 1;
+            landing.LineWeight = LineWeight.LineWeight018;
+            btr.AppendEntity(landing);
+            tr.AddNewlyCreatedDBObject(landing, true);
+
+            MText mtext = new MText
+            {
+                Location = new Point3d(textPt.X + (txtHt * 0.3), textPt.Y + (txtHt * 0.8), 0),
+                Contents = $"\\C7;{text}",
+                TextHeight = txtHt
+            };
+            btr.AppendEntity(mtext);
+            tr.AddNewlyCreatedDBObject(mtext, true);
         }
 
         private void DrawStirrupRung(BlockTableRecord btr, Transaction tr, double x1, double x2, double y, LineWeight lw, Color col)
@@ -795,42 +902,31 @@ namespace StructuralTakedown
             tr.AddNewlyCreatedDBObject(rung, true);
         }
 
-        private void DrawRebarDot(BlockTableRecord btr, Transaction tr, double cx, double cy, double rad, Color blackColor)
-        {
-            Circle dot = new Circle(new Point3d(cx, cy, 0), Vector3d.ZAxis, rad);
-            dot.Color = blackColor;
-            dot.LineWeight = LineWeight.LineWeight050;
-            btr.AppendEntity(dot);
-            tr.AddNewlyCreatedDBObject(dot, true);
-        }
-
+        // Table 2: Multi-Tier Schedule Table
         private void InsertLateralColumnScheduleTable(Database db, Transaction tr, BlockTableRecord btr, List<ColumnDesignResult> columns, double posX, double posY, bool isInch)
         {
             Table table = new Table();
             table.TableStyle = db.Tablestyle;
 
             int numRows = columns.Count + 2;
-            int numCols = 9;
+            int numCols = 6;
             table.SetSize(numRows, numCols);
 
             double rowHeight = isInch ? 30.0 : 2.5;
-            double colWidth = isInch ? 110.0 : 9.0;
+            double colWidth = isInch ? 120.0 : 10.0;
 
             table.SetRowHeight(rowHeight);
             table.SetColumnWidth(colWidth);
 
-            table.Cells[0, 0].TextString = "COLUMN DESIGN SCHEDULE (BNBC 2020 & ACI 318 - GRAVITY + WIND + SEISMIC)";
+            table.Cells[0, 0].TextString = "TABLE 2: COLUMN MULTI-TIER REINFORCEMENT SCHEDULE";
             table.Cells[0, 0].TextHeight = isInch ? 13.0 : 1.1;
 
             string[] headers = {
                 "COL\nNAME",
-                "TRIB\nAREA (sft)",
-                "GOVERNING\nLOAD CASE",
-                "DESIGN\nPu (kips)",
-                "DESIGN\nMu (k-ft)",
                 $"{columns[0].Tiers[0].TierLabel}\n(b x h & Rebar)",
                 $"{columns[0].Tiers[1].TierLabel}\n(b x h & Rebar)",
                 $"{columns[0].Tiers[2].TierLabel}\n(b x h & Rebar)",
+                "LATERAL TIES\n(Confinement)",
                 "EST. STEEL\nTOTAL (kg)"
             };
 
@@ -847,14 +943,11 @@ namespace StructuralTakedown
                 int r = i + 2;
 
                 table.Cells[r, 0].TextString = col.Name;
-                table.Cells[r, 1].TextString = $"{col.TribAreaSqFt:0}";
-                table.Cells[r, 2].TextString = col.GoverningCase;
-                table.Cells[r, 3].TextString = $"{col.GoverningPu_Kips:0.1}";
-                table.Cells[r, 4].TextString = $"{col.GoverningMu_FtKips:0.1}";
-                table.Cells[r, 5].TextString = $"{col.Tiers[0].WidthIn:0}\"x{col.Tiers[0].DepthIn:0}\"\n{col.Tiers[0].BarCount}-{col.Tiers[0].BarDiaMm}mm Ø";
-                table.Cells[r, 6].TextString = $"{col.Tiers[1].WidthIn:0}\"x{col.Tiers[1].DepthIn:0}\"\n{col.Tiers[1].BarCount}-{col.Tiers[1].BarDiaMm}mm Ø";
-                table.Cells[r, 7].TextString = $"{col.Tiers[2].WidthIn:0}\"x{col.Tiers[2].DepthIn:0}\"\n{col.Tiers[2].BarCount}-{col.Tiers[2].BarDiaMm}mm Ø";
-                table.Cells[r, 8].TextString = $"{col.TotalColSteelKg:0} kg";
+                table.Cells[r, 1].TextString = $"{col.Tiers[0].WidthIn:0}\"x{col.Tiers[0].DepthIn:0}\"\n{col.Tiers[0].BarCount}-{col.Tiers[0].BarDiaMm}mm Ø";
+                table.Cells[r, 2].TextString = $"{col.Tiers[1].WidthIn:0}\"x{col.Tiers[1].DepthIn:0}\"\n{col.Tiers[1].BarCount}-{col.Tiers[1].BarDiaMm}mm Ø";
+                table.Cells[r, 3].TextString = $"{col.Tiers[2].WidthIn:0}\"x{col.Tiers[2].DepthIn:0}\"\n{col.Tiers[2].BarCount}-{col.Tiers[2].BarDiaMm}mm Ø";
+                table.Cells[r, 4].TextString = "10mm @ 4\" (L/4)\n@ 7\" (Mid L/2)";
+                table.Cells[r, 5].TextString = $"{col.TotalColSteelKg:0} kg";
 
                 for (int c = 0; c < numCols; c++)
                 {
@@ -868,6 +961,7 @@ namespace StructuralTakedown
             tr.AddNewlyCreatedDBObject(table, true);
         }
 
+        // Table 3: BBS Summary
         private void InsertBBSTable(Database db, Transaction tr, BlockTableRecord btr, List<ColumnDesignResult> columns, double posX, double posY, bool isInch)
         {
             Table bbs = new Table();
@@ -883,7 +977,7 @@ namespace StructuralTakedown
             bbs.SetRowHeight(rowHeight);
             bbs.SetColumnWidth(colWidth);
 
-            bbs.Cells[0, 0].TextString = "BAR BENDING SCHEDULE (BBS) SUMMARY (BNBC 2020)";
+            bbs.Cells[0, 0].TextString = "TABLE 3: BAR BENDING SCHEDULE (BBS) SUMMARY (BNBC 2020)";
             bbs.Cells[0, 0].TextHeight = isInch ? 13.0 : 1.1;
 
             string[] headers = {
@@ -908,14 +1002,14 @@ namespace StructuralTakedown
                 bbs.Cells[currRow, 0].TextString = col.Name;
                 bbs.Cells[currRow, 1].TextString = "Main Longitudinal";
                 bbs.Cells[currRow, 2].TextString = $"{col.Tiers[0].BarDiaMm}mm / {col.Tiers[1].BarDiaMm}mm";
-                bbs.Cells[currRow, 3].TextString = "L_lap = 45 d_b (Mid-Height Stagger)";
+                bbs.Cells[currRow, 3].TextString = "Dockten Lap (1:6 slope, L=45 db)";
                 bbs.Cells[currRow, 4].TextString = $"{col.Tiers[0].BarCount} to {col.Tiers[2].BarCount}";
                 bbs.Cells[currRow, 5].TextString = $"{col.TotalColSteelKg * 0.75:0} kg";
 
                 bbs.Cells[currRow + 1, 0].TextString = col.Name;
                 bbs.Cells[currRow + 1, 1].TextString = "Seismic Ties";
                 bbs.Cells[currRow + 1, 2].TextString = "10mm Ø";
-                bbs.Cells[currRow + 1, 3].TextString = "135° Hooks (6 d_b extension)";
+                bbs.Cells[currRow + 1, 3].TextString = "135° Hooks (6 db ext)";
                 bbs.Cells[currRow + 1, 4].TextString = "4\" c/c in Lo, 7\" c/c Mid";
                 bbs.Cells[currRow + 1, 5].TextString = $"{col.TotalColSteelKg * 0.25:0} kg";
 
@@ -938,7 +1032,7 @@ namespace StructuralTakedown
                            $"2. Seismic Parameters: Zone Factor Z = {zoneZ} (Zone 1 - Khulna), Site Class SD, Response Factor R = 5.0 (IMRF).\\P" +
                            "3. Governing Load Combinations Evaluated: 1.4D, 1.2D+1.6L, 1.2D+1.0L+1.0W, 0.9D+1.0W, 1.2D+1.0L+1.0E, 0.9D+1.0E.\\P" +
                            "4. Confinement Zone (Lo): 10mm Ø seismic ties @ 4\" c/c over Lo = max(clear height / 6, col depth, 18\").\\P" +
-                           "5. Lap Splices: L_lap = 45 d_b. Staggered within middle half (L/2) of column. Never lap within joint or Lo.\\P" +
+                           "5. Lap Splices: L_lap = 45 db with 1:6 dockten bend. Staggered within middle half (L/2) of column. Never lap within Lo.\\P" +
                            "6. Materials: f'c = 3000 to 4000 psi, Rebar = Grade 60 (fy = 60,000 psi / 500W). Maximum w/c = 0.45.\\P" +
                            $"\\C2;7. Professional Certification: Designed by {meta.EngineerName} | {meta.IEB_Reg} | {meta.KDA_Reg}.",
                 TextHeight = scale * 0.38
@@ -980,7 +1074,7 @@ namespace StructuralTakedown
                 };
                 using (Process proc = Process.Start(psi))
                 {
-                    proc.WaitForExit(10000); // Wait up to 10 seconds
+                    proc.WaitForExit(10000);
                     return File.Exists(pdfPath);
                 }
             }
@@ -1094,7 +1188,7 @@ namespace StructuralTakedown
             sb.AppendLine("<li><b>Reinforcing Steel:</b> Deformed high-yield bars Grade 60 (fy = 60,000 psi / 500W conforming to BDS ISO 6935-2).</li>");
             sb.AppendLine("<li><b>Clear Concrete Cover:</b> 1.5 inches above Plinth Level (PL); 2.5 to 3.0 inches below PL in contact with ground.</li>");
             sb.AppendLine("<li><b>Seismic Confinement Hoops:</b> 10mm Ø ties @ 4\" c/c in end regions (Lo = max[clear height/6, col depth, 18\"]) with 135° seismic hooks.</li>");
-            sb.AppendLine("<li><b>Lap Splices:</b> L_lap = 45 d_b. Stagger splices within middle half of column clear height.</li>");
+            sb.AppendLine("<li><b>Lap Splices:</b> L_lap = 45 db with 1:6 dockten bend. Stagger splices within middle half of column clear height.</li>");
             sb.AppendLine("</ol>");
 
             sb.AppendLine("<div class='no-print' style='margin-top: 30px; text-align: center;'>");
