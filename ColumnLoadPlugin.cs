@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Text;
 using Autodesk.AutoCAD.Runtime;
@@ -150,25 +151,25 @@ namespace StructuralTakedown
 
             ProjectMetadata meta = new ProjectMetadata();
 
-            // 1. Project Information Prompts
-            PromptStringOptions psoProject = new PromptStringOptions("\nEnter Project Name: ") { DefaultValue = "Proposed Multi-Story Residential Building" };
+            // 1. Text Inputs - AllowSpaces = true enables spaces, dots, and commas
+            PromptStringOptions psoProject = new PromptStringOptions("\nEnter Project Name: ") { DefaultValue = "Proposed Multi-Story Building", AllowSpaces = true };
             PromptResult prProject = ed.GetString(psoProject);
             meta.ProjectName = string.IsNullOrWhiteSpace(prProject.StringResult) ? "Proposed Building" : prProject.StringResult;
 
-            PromptStringOptions psoClient = new PromptStringOptions("\nEnter Client Name: ") { DefaultValue = "Dr. Dabrina" };
+            PromptStringOptions psoClient = new PromptStringOptions("\nEnter Client Name: ") { DefaultValue = "Dr. Sabrina Sighnidha", AllowSpaces = true };
             PromptResult prClient = ed.GetString(psoClient);
-            meta.ClientName = string.IsNullOrWhiteSpace(prClient.StringResult) ? "Valued Client" : prClient.StringResult;
+            meta.ClientName = string.IsNullOrWhiteSpace(prClient.StringResult) ? "Dr. Sabrina Sighnidha" : prClient.StringResult;
 
-            PromptStringOptions psoPlot = new PromptStringOptions("\nEnter Plot / Holding No: ") { DefaultValue = "Plot-12, Block-B" };
+            PromptStringOptions psoPlot = new PromptStringOptions("\nEnter Plot / Holding No: ") { DefaultValue = "Plot-12, Block-B", AllowSpaces = true };
             PromptResult prPlot = ed.GetString(psoPlot);
-            meta.PlotNo = string.IsNullOrWhiteSpace(prPlot.StringResult) ? "N/A" : prPlot.StringResult;
+            meta.PlotNo = string.IsNullOrWhiteSpace(prPlot.StringResult) ? "Plot-12" : prPlot.StringResult;
 
-            PromptStringOptions psoAddr = new PromptStringOptions("\nEnter Site Address (e.g., Khulna): ") { DefaultValue = "Khulna, Bangladesh" };
+            PromptStringOptions psoAddr = new PromptStringOptions("\nEnter Site Address: ") { DefaultValue = "03, South Central Road, Khulna", AllowSpaces = true };
             PromptResult prAddr = ed.GetString(psoAddr);
-            meta.Address = string.IsNullOrWhiteSpace(prAddr.StringResult) ? "Khulna, Bangladesh" : prAddr.StringResult;
+            meta.Address = string.IsNullOrWhiteSpace(prAddr.StringResult) ? "03, South Central Road, Khulna" : prAddr.StringResult;
 
-            // 2. Structural Geometry
-            PromptIntegerOptions pioStories = new PromptIntegerOptions("\nEnter Total Number of Stories: ") { DefaultValue = 6 };
+            // 2. Geometry & Constraints
+            PromptIntegerOptions pioStories = new PromptIntegerOptions("\nEnter Total Number of Stories (e.g. 5 or 6): ") { DefaultValue = 6 };
             PromptIntegerResult pirStories = ed.GetInteger(pioStories);
             meta.TotalStories = pirStories.Value;
 
@@ -193,7 +194,7 @@ namespace StructuralTakedown
             PromptDoubleResult pirPW = ed.GetDouble(pdoPW);
             meta.Partition_Psf = pirPW.Value;
 
-            // 4. BNBC 2020 Lateral Inputs (Khulna Focus)
+            // 4. BNBC Lateral Inputs (Khulna: V=160 mph, Z=0.12)
             PromptDoubleOptions pdoWind = new PromptDoubleOptions("\nEnter Basic Wind Speed V in MPH (Khulna=160 mph): ") { DefaultValue = 160.0 };
             PromptDoubleResult pirWind = ed.GetDouble(pdoWind);
             meta.WindSpeedMph = pirWind.Value;
@@ -204,7 +205,7 @@ namespace StructuralTakedown
 
             using (Transaction tr = db.TransactionManager.StartTransaction())
             {
-                // Select Slab Boundary
+                // Slab Boundary Selection
                 TypedValue[] slabFilter = new TypedValue[] {
                     new TypedValue((int)DxfCode.LayerName, "SLAB_OUTLINE"),
                     new TypedValue((int)DxfCode.Start, "LWPOLYLINE")
@@ -233,7 +234,7 @@ namespace StructuralTakedown
                 double buildingLengthFt = (slabExtents.MaxPoint.Y - slabExtents.MinPoint.Y) * toFtScale;
                 double totalBuildingHtFt = meta.TotalStories * meta.StoryHeightFt;
 
-                // Extract Column Centroids
+                // Extract Column Locations
                 TypedValue[] colFilter = new TypedValue[] {
                     new TypedValue((int)DxfCode.LayerName, "COLUMNS")
                 };
@@ -296,7 +297,7 @@ namespace StructuralTakedown
                     }
                 }
 
-                // Engineering unit rates
+                // Load unit rates
                 double gammaC = 150.0;
                 double gammaM = 120.0;
                 double tSlabFt = 5.0 / 12.0;
@@ -314,7 +315,7 @@ namespace StructuralTakedown
                 double roofDL_psf = slabSW_psf + 35.0;
                 double roofLL_psf = 20.0;
 
-                // Map beam framing lengths
+                // Beam framing distribution
                 double snapToleranceFt = 2.0;
                 foreach (var beam in beams)
                 {
@@ -343,7 +344,7 @@ namespace StructuralTakedown
                 foreach (var col in columns)
                     col.TribAreaSqFt = CalculateTributaryArea(col.Center, columns, slabAreaSqFt);
 
-                // Global lateral shears
+                // Global Lateral Shears
                 double qz = 0.00256 * 0.85 * 1.0 * Math.Pow(meta.WindSpeedMph, 2.0);
                 double designWindPressure_psf = qz * 0.85 * 1.3;
                 double totalBuildingWindShear_Kips = (designWindPressure_psf * Math.Max(buildingWidthFt, buildingLengthFt) * totalBuildingHtFt) / 1000.0;
@@ -390,7 +391,7 @@ namespace StructuralTakedown
                     col.TotalBaseDL_Kips = cumDL_lbs / 1000.0;
                     col.TotalBaseLL_Kips = ((cumFloorLL_unred_lbs * llrFactor) + (col.TribAreaSqFt * roofLL_psf)) / 1000.0;
 
-                    // Lateral load distribution
+                    // Lateral distribution
                     bool isExterior = (col.TribAreaSqFt < (slabAreaSqFt / numColsTotal) * 0.8);
                     double shareFactor = isExterior ? (1.0 / (numColsTotal * 1.5)) : (2.0 / (numColsTotal * 1.5));
 
@@ -408,8 +409,6 @@ namespace StructuralTakedown
                     double Wm = col.WindMoment_FtKips;
                     double Em = col.SeismicMoment_FtKips;
 
-                    // Load Combinations
-                    double c1_p = 1.4 * D;
                     double c2_p = 1.2 * D + 1.6 * L;
                     double c3_p = 1.2 * D + 1.0 * L + deltaP_wind; double c3_m = Wm;
                     double c5_p = 1.2 * D + 1.0 * L + deltaP_eq; double c5_m = Em;
@@ -467,12 +466,11 @@ namespace StructuralTakedown
                     tr.AddNewlyCreatedDBObject(note, true);
                 }
 
-                // 8. Place Drawings & Tables at least 20 FEET CLEAR from Slab Outline
-                double clearOffsetCAD = isInch ? (25.0 * 12.0) : 25.0; // 25 feet clear distance
+                // 8. Visual Detailing Offset (25 ft clear distance)
+                double clearOffsetCAD = isInch ? (25.0 * 12.0) : 25.0;
                 double startDrawingX = slabExtents.MaxPoint.X + clearOffsetCAD;
                 double startDrawingY = slabExtents.MaxPoint.Y;
 
-                // Draw Side-by-Side Long Sections and Cross Sections
                 DrawAllColumnElevationsAndSections(btr, tr, columns, meta.TotalStories, meta.StoryHeightFt, startDrawingX, startDrawingY, isInch);
 
                 double totalElevationsWidth = columns.Count * (isInch ? 160.0 : 14.0);
@@ -484,14 +482,21 @@ namespace StructuralTakedown
                 InsertBBSTable(db, tr, btr, columns, tableOffsetX, bbsOffsetY, isInch);
                 InsertLateralMaterialNotes(btr, tr, tableOffsetX, bbsOffsetY - (isInch ? 260.0 : 22.0), isInch, meta.WindSpeedMph, meta.SeismicZoneZ, meta);
 
-                // 9. Generate Printable HTML Report
+                // 9. Generate HTML and Direct PDF Calculation Report
                 string desktopPath = Environment.GetFolderPath(Environment.SpecialFolder.Desktop);
-                string reportPath = Path.Combine(desktopPath, $"{meta.ProjectName.Replace(" ", "_")}_Structural_Calculation_Report.html");
-                GeneratePrintableHtmlReport(reportPath, meta, columns, totalBuildingWindShear_Kips, totalBuildingSeismicShear_Kips);
+                string baseFileName = $"{meta.ProjectName.Replace(" ", "_")}_Structural_Calculation_Report";
+                string htmlPath = Path.Combine(desktopPath, $"{baseFileName}.html");
+                string pdfPath = Path.Combine(desktopPath, $"{baseFileName}.pdf");
+
+                GeneratePrintableHtmlReport(htmlPath, meta, columns, totalBuildingWindShear_Kips, totalBuildingSeismicShear_Kips);
+                bool pdfSuccess = ConvertHtmlToPdfViaBrowser(htmlPath, pdfPath);
 
                 tr.Commit();
                 ed.WriteMessage($"\nDone! Details and schedule table drawn at least 20' clear from slab outline.");
-                ed.WriteMessage($"\nFormal Calculation Report saved to Desktop: {reportPath}");
+                if (pdfSuccess)
+                    ed.WriteMessage($"\nPDF Calculation Report successfully generated: {pdfPath}");
+                else
+                    ed.WriteMessage($"\nHTML Calculation Sheet generated (Open and Save as PDF): {htmlPath}");
             }
         }
 
@@ -533,6 +538,7 @@ namespace StructuralTakedown
                 barCount = 4;
             }
 
+            // Ensure even bar counts (4, 6, 8, 10, 12)
             if (barCount % 2 != 0) barCount++;
 
             double unitWtMain = (barDia == 20) ? 0.753 : 0.482;
@@ -551,7 +557,7 @@ namespace StructuralTakedown
                 DepthIn = h,
                 BarCount = barCount,
                 BarDiaMm = barDia,
-                TieSpec = "10mm Ø @ 4\" (L/4), @ 6\" (mid)",
+                TieSpec = "10mm Ø @ 4\" (L/4), @ 7\" (mid)",
                 SteelWeightKg = Math.Round(mainSteelKg + tieSteelKg, 1)
             };
         }
@@ -559,13 +565,10 @@ namespace StructuralTakedown
         private void DrawAllColumnElevationsAndSections(BlockTableRecord btr, Transaction tr, List<ColumnDesignResult> columns, int numStories, double storyHtFt, double startX, double startY, bool isInch)
         {
             double scale = isInch ? 12.0 : 1.0;
-            double colSpacing = isInch ? 160.0 : 14.0;
+            double colSpacing = isInch ? 170.0 : 14.5;
 
-            // Pure Black Color (TrueColor RGB 0, 0, 0)
             Color pureBlackColor = Color.FromRgb(0, 0, 0);
-
-            // Stirrup Color: ACI Gray (ColorIndex 8)
-            Color stirrupColor = Color.FromColorIndex(ColorMethod.ByAci, 8);
+            Color stirrupColor = Color.FromColorIndex(ColorMethod.ByAci, 8); // Thin Gray
 
             for (int i = 0; i < columns.Count; i++)
             {
@@ -574,7 +577,7 @@ namespace StructuralTakedown
                 double totalHt = numStories * storyHtFt * scale;
                 double colW = col.Tiers[0].WidthIn * (isInch ? 1.0 : (1.0 / 12.0));
 
-                // 1. Concrete Outline
+                // 1. Concrete Elevation Boundary
                 Polyline elev = new Polyline();
                 elev.AddVertexAt(0, new Point2d(colX, startY - totalHt), 0, 0, 0);
                 elev.AddVertexAt(1, new Point2d(colX + colW, startY - totalHt), 0, 0, 0);
@@ -586,21 +589,21 @@ namespace StructuralTakedown
                 btr.AppendEntity(elev);
                 tr.AddNewlyCreatedDBObject(elev, true);
 
-                // 2. Thick Black Main Longitudinal Bars (Lineweight 0.50mm, Pure Black RGB 0,0,0)
+                // 2. Thick Black Main Longitudinal Rebars
                 double cover = isInch ? 1.5 : (1.5 / 12.0);
                 Line mainBarLeft = new Line(new Point3d(colX + cover, startY - totalHt, 0), new Point3d(colX + cover, startY, 0));
-                mainBarLeft.Color = pureBlackColor; // Strict Black
-                mainBarLeft.LineWeight = LineWeight.LineWeight050; // THICK
+                mainBarLeft.Color = pureBlackColor;
+                mainBarLeft.LineWeight = LineWeight.LineWeight050; // Heavy
                 btr.AppendEntity(mainBarLeft);
                 tr.AddNewlyCreatedDBObject(mainBarLeft, true);
 
                 Line mainBarRight = new Line(new Point3d(colX + colW - cover, startY - totalHt, 0), new Point3d(colX + colW - cover, startY, 0));
-                mainBarRight.Color = pureBlackColor; // Strict Black
-                mainBarRight.LineWeight = LineWeight.LineWeight050; // THICK
+                mainBarRight.Color = pureBlackColor;
+                mainBarRight.LineWeight = LineWeight.LineWeight050; // Heavy
                 btr.AppendEntity(mainBarRight);
                 tr.AddNewlyCreatedDBObject(mainBarRight, true);
 
-                // 3. Floor Levels, Stirrups & Splices
+                // 3. Floor Levels & Varied Stirrup Distribution
                 for (int s = 0; s <= numStories; s++)
                 {
                     double levelY = startY - (s * storyHtFt * scale);
@@ -614,18 +617,27 @@ namespace StructuralTakedown
                     {
                         double storyTop = levelY;
                         double storyBot = levelY - (storyHtFt * scale);
-                        double l0 = (storyHtFt * scale) / 4.0;
+                        double storyH = storyHtFt * scale;
+                        double l0 = storyH / 4.0; // Confinement length L/4
 
-                        // Confinement zones: Thin Stirrups in Gray (Lineweight 0.18mm)
-                        DrawStirrupRung(btr, tr, colX, colX + colW, storyTop - (l0 * 0.3), LineWeight.LineWeight018, stirrupColor);
-                        DrawStirrupRung(btr, tr, colX, colX + colW, storyTop - (l0 * 0.7), LineWeight.LineWeight018, stirrupColor);
-                        DrawStirrupRung(btr, tr, colX, colX + colW, storyBot + (l0 * 0.3), LineWeight.LineWeight018, stirrupColor);
-                        DrawStirrupRung(btr, tr, colX, colX + colW, storyBot + (l0 * 0.7), LineWeight.LineWeight018, stirrupColor);
+                        // Confinement zone (Top L/4): 4" spacing
+                        double step4in = isInch ? 4.0 : (4.0 / 12.0);
+                        for (double y = storyTop - (step4in * 0.5); y >= storyTop - l0; y -= step4in)
+                            DrawStirrupRung(btr, tr, colX, colX + colW, y, LineWeight.LineWeight018, stirrupColor);
+
+                        // Middle zone (L/2): 7" spacing
+                        double step7in = isInch ? 7.0 : (7.0 / 12.0);
+                        for (double y = storyTop - l0 - step7in; y >= storyBot + l0 + (step7in * 0.5); y -= step7in)
+                            DrawStirrupRung(btr, tr, colX, colX + colW, y, LineWeight.LineWeight018, stirrupColor);
+
+                        // Confinement zone (Bottom L/4): 4" spacing
+                        for (double y = storyBot + l0 - (step4in * 0.5); y >= storyBot + (step4in * 0.5); y -= step4in)
+                            DrawStirrupRung(btr, tr, colX, colX + colW, y, LineWeight.LineWeight018, stirrupColor);
 
                         // Mid-height Lapping Splices
                         double midY = (storyTop + storyBot) / 2.0;
                         Line lapLeft = new Line(new Point3d(colX + cover + (scale * 0.08), midY - (scale * 0.8), 0), new Point3d(colX + cover + (scale * 0.08), midY + (scale * 0.8), 0));
-                        lapLeft.Color = Color.FromColorIndex(ColorMethod.ByAci, 1); // Red accent for lap
+                        lapLeft.Color = Color.FromColorIndex(ColorMethod.ByAci, 1);
                         lapLeft.LineWeight = LineWeight.LineWeight035;
                         btr.AppendEntity(lapLeft);
                         tr.AddNewlyCreatedDBObject(lapLeft, true);
@@ -636,40 +648,50 @@ namespace StructuralTakedown
                         btr.AppendEntity(lapRight);
                         tr.AddNewlyCreatedDBObject(lapRight, true);
 
+                        // Text annotations for stirrups and lap
                         if (s == 1)
                         {
-                            MText lapNote = new MText
+                            MText tieTopNote = new MText
                             {
-                                Location = new Point3d(colX + colW + (scale * 0.3), midY + (scale * 0.3), 0),
-                                Contents = "\\C1;Lap Zone\\PL_lap=45 d_b\\P(Staggered)",
-                                TextHeight = scale * 0.25
+                                Location = new Point3d(colX + colW + (scale * 0.3), storyTop - (l0 * 0.5), 0),
+                                Contents = "\\C1;10mm @ 4\" c/c (L/4)",
+                                TextHeight = scale * 0.22
                             };
-                            btr.AppendEntity(lapNote);
-                            tr.AddNewlyCreatedDBObject(lapNote, true);
+                            btr.AppendEntity(tieTopNote);
+                            tr.AddNewlyCreatedDBObject(tieTopNote, true);
+
+                            MText tieMidNote = new MText
+                            {
+                                Location = new Point3d(colX + colW + (scale * 0.3), midY, 0),
+                                Contents = "\\C3;10mm @ 7\" c/c (Mid L/2)\\P\\C1;Lap L=45 db (Staggered)",
+                                TextHeight = scale * 0.22
+                            };
+                            btr.AppendEntity(tieMidNote);
+                            tr.AddNewlyCreatedDBObject(tieMidNote, true);
                         }
                     }
                 }
 
-                // Elevation Title
+                // Long Section Header
                 MText colTitle = new MText
                 {
                     Location = new Point3d(colX - (scale * 1.0), startY + (scale * 2.0), 0),
-                    Contents = $"\\C3;{col.Name} LONG-SECTION\\P\\C7;{col.Tiers[0].WidthIn:0}\"x{col.Tiers[0].DepthIn:0}\"",
+                    Contents = $"\\C3;{col.Name} LONG-SECTION\\P\\C7;Base: {col.Tiers[0].WidthIn:0}\"x{col.Tiers[0].DepthIn:0}\"",
                     TextHeight = scale * 0.45
                 };
                 btr.AppendEntity(colTitle);
                 tr.AddNewlyCreatedDBObject(colTitle, true);
 
-                // 4. Cross-Sections Beneath Long-Section
+                // 4. Detailed Cross-Sections with Exact Rebar Counts
                 double secStartY = startY - totalHt - (isInch ? 36.0 : 3.0);
                 for (int t = 0; t < col.Tiers.Count; t++)
                 {
                     TierDesign tier = col.Tiers[t];
                     double tW = tier.WidthIn * (isInch ? 1.0 : (1.0 / 12.0));
                     double tD = tier.DepthIn * (isInch ? 1.0 : (1.0 / 12.0));
-                    double secY = secStartY - (t * (isInch ? 45.0 : 3.8));
+                    double secY = secStartY - (t * (isInch ? 55.0 : 4.6));
 
-                    // Concrete outline
+                    // Concrete boundary
                     Polyline secBox = new Polyline();
                     secBox.AddVertexAt(0, new Point2d(colX, secY - tD), 0, 0, 0);
                     secBox.AddVertexAt(1, new Point2d(colX + tW, secY - tD), 0, 0, 0);
@@ -681,32 +703,85 @@ namespace StructuralTakedown
                     btr.AppendEntity(secBox);
                     tr.AddNewlyCreatedDBObject(secBox, true);
 
-                    // Thin Stirrup Loop in Gray
+                    // Thin Stirrup Loop
                     Polyline tieLoop = new Polyline();
                     tieLoop.AddVertexAt(0, new Point2d(colX + cover, secY - tD + cover), 0, 0, 0);
                     tieLoop.AddVertexAt(1, new Point2d(colX + tW - cover, secY - tD + cover), 0, 0, 0);
                     tieLoop.AddVertexAt(2, new Point2d(colX + tW - cover, secY - cover), 0, 0, 0);
                     tieLoop.AddVertexAt(3, new Point2d(colX + cover, secY - cover), 0, 0, 0);
                     tieLoop.Closed = true;
-                    tieLoop.Color = stirrupColor; // Stirrup Gray
-                    tieLoop.LineWeight = LineWeight.LineWeight018; // THIN
+                    tieLoop.Color = stirrupColor;
+                    tieLoop.LineWeight = LineWeight.LineWeight018;
                     btr.AppendEntity(tieLoop);
                     tr.AddNewlyCreatedDBObject(tieLoop, true);
 
-                    // Thick Pure Black Main Rebar Markers (RGB 0,0,0)
-                    DrawRebarDot(btr, tr, colX + cover + 0.1, secY - cover - 0.1, scale * 0.08, pureBlackColor);
-                    DrawRebarDot(btr, tr, colX + tW - cover - 0.1, secY - cover - 0.1, scale * 0.08, pureBlackColor);
-                    DrawRebarDot(btr, tr, colX + cover + 0.1, secY - tD + cover + 0.1, scale * 0.08, pureBlackColor);
-                    DrawRebarDot(btr, tr, colX + tW - cover - 0.1, secY - tD + cover + 0.1, scale * 0.08, pureBlackColor);
+                    // Draw Exact Rebar Layout (4, 6, 8, 10, or 12 bars)
+                    DrawDynamicRebarDots(btr, tr, colX, secY, tW, tD, cover, tier.BarCount, scale * 0.09, pureBlackColor);
 
+                    // Cross-Section Callout Text
                     MText secText = new MText
                     {
                         Location = new Point3d(colX + tW + (scale * 0.3), secY - (tD / 2.0), 0),
-                        Contents = $"\\C2;{tier.TierLabel}\\P\\C7;{tier.WidthIn:0}\"x{tier.DepthIn:0}\" [{tier.BarCount}-{tier.BarDiaMm}mm]",
+                        Contents = $"\\C2;{tier.TierLabel}\\P" +
+                                   $"\\C7;Size: {tier.WidthIn:0}\"x{tier.DepthIn:0}\"\\P" +
+                                   $"\\C1;Main: {tier.BarCount}-{tier.BarDiaMm}mm Ø\\P" +
+                                   $"\\C8;Ties: 10mm Ø (4\"/7\" c/c)",
                         TextHeight = scale * 0.22
                     };
                     btr.AppendEntity(secText);
                     tr.AddNewlyCreatedDBObject(secText, true);
+                }
+            }
+        }
+
+        private void DrawDynamicRebarDots(BlockTableRecord btr, Transaction tr, double colX, double secY, double tW, double tD, double cover, int barCount, double rad, Color pureBlack)
+        {
+            double leftX = colX + cover + (rad * 0.5);
+            double rightX = colX + tW - cover - (rad * 0.5);
+            double topY = secY - cover - (rad * 0.5);
+            double botY = secY - tD + cover + (rad * 0.5);
+
+            // 4 Corner Bars (Common to all configurations)
+            DrawRebarDot(btr, tr, leftX, topY, rad, pureBlack);
+            DrawRebarDot(btr, tr, rightX, topY, rad, pureBlack);
+            DrawRebarDot(btr, tr, leftX, botY, rad, pureBlack);
+            DrawRebarDot(btr, tr, rightX, botY, rad, pureBlack);
+
+            if (barCount == 6)
+            {
+                // 2 Middle bars along depth
+                double midY = (topY + botY) / 2.0;
+                DrawRebarDot(btr, tr, leftX, midY, rad, pureBlack);
+                DrawRebarDot(btr, tr, rightX, midY, rad, pureBlack);
+            }
+            else if (barCount == 8)
+            {
+                // 2 bars on each long face
+                double y1 = topY - (topY - botY) / 3.0;
+                double y2 = topY - 2.0 * (topY - botY) / 3.0;
+                DrawRebarDot(btr, tr, leftX, y1, rad, pureBlack);
+                DrawRebarDot(btr, tr, leftX, y2, rad, pureBlack);
+                DrawRebarDot(btr, tr, rightX, y1, rad, pureBlack);
+                DrawRebarDot(btr, tr, rightX, y2, rad, pureBlack);
+            }
+            else if (barCount >= 10)
+            {
+                // 3 intermediate bars on each long face
+                double y1 = topY - (topY - botY) / 4.0;
+                double y2 = topY - 2.0 * (topY - botY) / 4.0;
+                double y3 = topY - 3.0 * (topY - botY) / 4.0;
+                DrawRebarDot(btr, tr, leftX, y1, rad, pureBlack);
+                DrawRebarDot(btr, tr, leftX, y2, rad, pureBlack);
+                DrawRebarDot(btr, tr, leftX, y3, rad, pureBlack);
+                DrawRebarDot(btr, tr, rightX, y1, rad, pureBlack);
+                DrawRebarDot(btr, tr, rightX, y2, rad, pureBlack);
+                DrawRebarDot(btr, tr, rightX, y3, rad, pureBlack);
+
+                if (barCount == 12)
+                {
+                    double midX = (leftX + rightX) / 2.0;
+                    DrawRebarDot(btr, tr, midX, topY, rad, pureBlack);
+                    DrawRebarDot(btr, tr, midX, botY, rad, pureBlack);
                 }
             }
         }
@@ -723,8 +798,8 @@ namespace StructuralTakedown
         private void DrawRebarDot(BlockTableRecord btr, Transaction tr, double cx, double cy, double rad, Color blackColor)
         {
             Circle dot = new Circle(new Point3d(cx, cy, 0), Vector3d.ZAxis, rad);
-            dot.Color = blackColor; // Strict Black (RGB 0,0,0)
-            dot.LineWeight = LineWeight.LineWeight050; // Thick rebar
+            dot.Color = blackColor;
+            dot.LineWeight = LineWeight.LineWeight050;
             btr.AppendEntity(dot);
             tr.AddNewlyCreatedDBObject(dot, true);
         }
@@ -841,7 +916,7 @@ namespace StructuralTakedown
                 bbs.Cells[currRow + 1, 1].TextString = "Seismic Ties";
                 bbs.Cells[currRow + 1, 2].TextString = "10mm Ø";
                 bbs.Cells[currRow + 1, 3].TextString = "135° Hooks (6 d_b extension)";
-                bbs.Cells[currRow + 1, 4].TextString = "4\" c/c in Lo, 6\" c/c Mid";
+                bbs.Cells[currRow + 1, 4].TextString = "4\" c/c in Lo, 7\" c/c Mid";
                 bbs.Cells[currRow + 1, 5].TextString = $"{col.TotalColSteelKg * 0.25:0} kg";
 
                 currRow += 2;
@@ -870,6 +945,49 @@ namespace StructuralTakedown
             };
             btr.AppendEntity(notes);
             tr.AddNewlyCreatedDBObject(notes, true);
+        }
+
+        private bool ConvertHtmlToPdfViaBrowser(string htmlPath, string pdfPath)
+        {
+            string[] possibleBrowsers = new string[]
+            {
+                @"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+                @"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+                @"C:\Program Files\Google\Chrome\Application\chrome.exe",
+                @"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe"
+            };
+
+            string browserExe = null;
+            foreach (var b in possibleBrowsers)
+            {
+                if (File.Exists(b))
+                {
+                    browserExe = b;
+                    break;
+                }
+            }
+
+            if (browserExe == null) return false;
+
+            try
+            {
+                ProcessStartInfo psi = new ProcessStartInfo
+                {
+                    FileName = browserExe,
+                    Arguments = $"--headless --disable-gpu --run-all-compositor-stages-before-draw --print-to-pdf=\"{pdfPath}\" \"{htmlPath}\"",
+                    CreateNoWindow = true,
+                    UseShellExecute = false
+                };
+                using (Process proc = Process.Start(psi))
+                {
+                    proc.WaitForExit(10000); // Wait up to 10 seconds
+                    return File.Exists(pdfPath);
+                }
+            }
+            catch
+            {
+                return false;
+            }
         }
 
         private void GeneratePrintableHtmlReport(string filePath, ProjectMetadata meta, List<ColumnDesignResult> columns, double totalWindShear, double totalSeismicShear)
